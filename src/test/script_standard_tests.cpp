@@ -90,6 +90,8 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success)
     BOOST_CHECK_EQUAL(Solver(s, solutions), TX_WITNESS_V0_KEYHASH);
     BOOST_CHECK_EQUAL(solutions.size(), 1U);
     BOOST_CHECK(solutions[0] == ToByteVector(pubkeys[0].GetID()));
+    BOOST_CHECK(s.IsNativePayToWitnessPubKeyHash());
+    BOOST_CHECK(!s.IsPayToWitnessScriptHash());
 
     // TX_WITNESS_V0_SCRIPTHASH
     uint256 scriptHash;
@@ -101,6 +103,8 @@ BOOST_AUTO_TEST_CASE(script_standard_Solver_success)
     BOOST_CHECK_EQUAL(Solver(s, solutions), TX_WITNESS_V0_SCRIPTHASH);
     BOOST_CHECK_EQUAL(solutions.size(), 1U);
     BOOST_CHECK(solutions[0] == ToByteVector(scriptHash));
+    BOOST_CHECK(s.IsPayToWitnessScriptHash());
+    BOOST_CHECK(!s.IsNativePayToWitnessPubKeyHash());
 
     // TX_NONSTANDARD
     s.clear();

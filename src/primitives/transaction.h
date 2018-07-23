@@ -125,6 +125,11 @@ public:
     }
 
     std::string ToString() const;
+
+    bool SpendsNestedPayToWitnessPubKeyHashOutput(CScript spentScriptPubKey) const;
+    bool SpendsNestedPayToWitnessScriptHashOutput(CScript spentScriptPubKey) const;
+    bool SpendsNativePayToWitnessPubKeyHashOutput(CScript spentScriptPubKey) const;
+    bool SpendsNativePayToWitnessScriptHashOutput(CScript spentScriptPubKey) const;
 };
 
 /** An output of a transaction.  It contains the public key that the next input
