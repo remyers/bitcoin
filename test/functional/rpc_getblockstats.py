@@ -11,6 +11,7 @@ from test_framework.util import (
     assert_equal,
     assert_raises_rpc_error,
 )
+from decimal import Decimal
 import json
 import os
 
@@ -36,22 +37,40 @@ class GetblockstatsTest(BitcoinTestFramework):
         self.extra_args = [['-txindex']]
 
     def get_stats(self):
-        return [self.nodes[0].getblockstats(hash_or_height=self.start_height + i) for i in range(self.max_stat_pos+1)]
+        return [self.nodes[0].getblockstats(hash_or_height=self.start_height + i) for i in range(self.max_stat_pos + 1)]
 
     def generate_test_data(self, filename):
         mocktime = 1525107225
         self.nodes[0].setmocktime(mocktime)
         self.nodes[0].generate(101)
 
-        address = self.nodes[0].getnewaddress('', 'bech32')
-        self.nodes[0].sendtoaddress(address=address, amount=10, subtractfeefromamount=True)
+        pk1 = self.nodes[0].getaddressinfo(self.nodes[0].getnewaddress())['pubkey']
+        pk2 = self.nodes[0].getaddressinfo(self.nodes[0].getnewaddress())['pubkey']
+
+        nested_p2wpkh_address = self.nodes[0].getnewaddress('', 'p2sh-segwit')
+        native_p2wpkh_address = self.nodes[0].getnewaddress('', 'bech32')
+        native_p2wsh_address = self.nodes[0].addmultisigaddress(2, [pk1, pk2], '', 'bech32')['address']
+        nested_p2wsh_address = self.nodes[0].addmultisigaddress(2, [pk1, pk2], '', 'p2sh-segwit')['address']
+
+        # testing nested p2wpkh, native p2wsh, and nested p2wsh metrics
+        outputs = {nested_p2wpkh_address: 4,
+                   self.nodes[0].getnewaddress('', 'legacy'): 1,
+                   native_p2wsh_address: 2,
+                   nested_p2wsh_address: 30}
+        self.nodes[0].sendmany('', outputs)
+
         self.nodes[0].generate(1)
         self.sync_all()
 
-        self.nodes[0].sendtoaddress(address=address, amount=10, subtractfeefromamount=True)
-        self.nodes[0].sendtoaddress(address=address, amount=10, subtractfeefromamount=False)
+        # testing native_p2wpkh and spending metrics
+        inputs = self.nodes[0].listunspent()
+        outputs = {native_p2wpkh_address: sum(i['amount'] for i in inputs) - Decimal('0.001')}
+        rawtx = self.nodes[0].createrawtransaction(inputs=inputs, outputs=outputs, locktime=0)
+        signed_tx = self.nodes[0].signrawtransactionwithwallet(hexstring=rawtx)
+        self.nodes[0].sendrawtransaction(hexstring=signed_tx['hex'])
+
         self.nodes[0].settxfee(amount=0.003)
-        self.nodes[0].sendtoaddress(address=address, amount=1, subtractfeefromamount=True)
+        self.nodes[0].sendtoaddress(address=nested_p2wpkh_address, amount=1, subtractfeefromamount=True)
         self.sync_all()
         self.nodes[0].generate(1)
 
