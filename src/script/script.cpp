@@ -211,6 +211,31 @@ bool CScript::IsPayToWitnessScriptHash() const
             (*this)[1] == 0x20);
 }
 
+bool CScript::IsNativePayToWitnessPubKeyHash() const
+{
+  // Extra-fast test for native pay-to-witness-pubkey-hash CScripts:
+    return (this->size() == 22 &&
+            (*this)[0] == OP_0 &&
+            (*this)[1] == 0x14);
+}
+
+bool CScript::IsNestedPayToWitnessPubKeyHashScriptSig() const
+{
+    return (this->size() == 23 &&
+            (*this)[0] == 0x16 &&
+            (*this)[1] == 0x00 &&
+            (*this)[2] == 0x14);
+}
+
+bool CScript::IsNestedPayToWitnessScriptHashScriptSig() const
+{
+    return (this->size() == 35 &&
+            (*this)[0] == 0x22 &&
+            (*this)[1] == 0x00 &&
+            (*this)[2] == 0x20);
+}
+
+
 // A witness program is any valid CScript that consists of a 1-byte push opcode
 // followed by a data push between 2 and 40 bytes.
 bool CScript::IsWitnessProgram(int& version, std::vector<unsigned char>& program) const
