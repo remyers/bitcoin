@@ -52,9 +52,9 @@ class GetblockstatsTest(BitcoinTestFramework):
         native_p2wsh_address = self.nodes[0].addmultisigaddress(2, [pk1, pk2], '', 'bech32')['address']
         nested_p2wsh_address = self.nodes[0].addmultisigaddress(2, [pk1, pk2], '', 'p2sh-segwit')['address']
 
-        # testing nested p2wpkh, native p2wsh, and nested p2wsh metrics
+        # testing nested p2wpkh, dust, native p2wsh, and nested p2wsh metrics
         outputs = {nested_p2wpkh_address: 4,
-                   self.nodes[0].getnewaddress('', 'legacy'): 1,
+                   self.nodes[0].getnewaddress('', 'legacy'): 0.00001,
                    native_p2wsh_address: 2,
                    nested_p2wsh_address: 30}
         self.nodes[0].sendmany('', outputs)
