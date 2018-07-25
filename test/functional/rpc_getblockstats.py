@@ -51,7 +51,7 @@ class GetblockstatsTest(BitcoinTestFramework):
         native_p2wsh_address = self.nodes[0].addmultisigaddress(2, [pk1, pk2], '', 'bech32')['address']
         nested_p2wsh_address = self.nodes[0].addmultisigaddress(2, [pk1, pk2], '', 'p2sh-segwit')['address']
 
-        # testing nested p2wpkh, dust, native p2wsh, and nested p2wsh metrics
+        # testing batching, nested p2wpkh, dust, native p2wsh, and nested p2wsh metrics
         outputs = {nested_p2wpkh_address: 4,
                    self.nodes[0].getnewaddress('', 'legacy'): 0.00001,
                    native_p2wsh_address: 2,
@@ -61,10 +61,10 @@ class GetblockstatsTest(BitcoinTestFramework):
         self.nodes[0].generate(1)
         self.sync_all()
 
-        # testing native_p2wpkh and spending metrics
+        # testing RBF, consolidation, native_p2wpkh and spending metrics
         inputs = self.nodes[0].listunspent()
         outputs = {native_p2wpkh_address: sum(i['amount'] for i in inputs) - Decimal('0.001')}
-        rawtx = self.nodes[0].createrawtransaction(inputs=inputs, outputs=outputs, locktime=0)
+        rawtx = self.nodes[0].createrawtransaction(inputs=inputs, outputs=outputs, locktime=0, replaceable=True)
         signed_tx = self.nodes[0].signrawtransactionwithwallet(hexstring=rawtx)
         self.nodes[0].sendrawtransaction(hexstring=signed_tx['hex'])
 
