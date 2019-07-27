@@ -7,7 +7,7 @@
 This file is modified from python-bitcoinlib.
 """
 
-from .messages import CTransaction, CTxOut, sha256, hash256, uint256_from_str, ser_uint256, ser_string, CTxInWitness
+from .messages import COutPoint, CTransaction, CTxOut, sha256, hash256, uint256_from_str, ser_uint256, ser_string, CTxInWitness
 from .key import ECKey, ECPubKey
 
 import binascii
@@ -594,6 +594,7 @@ SIGHASH_SINGLE = 3
 SIGHASH_ALLINPUT = 0x00
 SIGHASH_ANYONECANPAY = 0x80
 SIGHASH_ANYPREVOUT = 0x40
+SIGHASH_NOINPUT = 0x40
 SIGHASH_ANYPREVOUTANYSCRIPT = 0xc0
 
 
@@ -688,14 +689,18 @@ def SegwitVersion1SignatureHash(script, txTo, inIdx, hashtype, amount):
     hashPrevouts = 0
     hashSequence = 0
     hashOutputs = 0
+    outpoint = COutPoint()
+    scriptCode = CScript()
 
-    if not (hashtype & SIGHASH_ANYONECANPAY):
+    noinput = not not (hashtype & SIGHASH_NOINPUT)
+
+    if not (hashtype & SIGHASH_ANYONECANPAY) and not noinput:
         serialize_prevouts = bytes()
         for i in txTo.vin:
             serialize_prevouts += i.prevout.serialize()
         hashPrevouts = uint256_from_str(hash256(serialize_prevouts))
 
-    if (not (hashtype & SIGHASH_ANYONECANPAY) and (hashtype & 0x1f) != SIGHASH_SINGLE and (hashtype & 0x1f) != SIGHASH_NONE):
+    if (not (hashtype & SIGHASH_ANYONECANPAY) and (hashtype & 0x1f) != SIGHASH_SINGLE and (hashtype & 0x1f) != SIGHASH_NONE and not noinput):
         serialize_sequence = bytes()
         for i in txTo.vin:
             serialize_sequence += struct.pack("<I", i.nSequence)
@@ -710,12 +715,16 @@ def SegwitVersion1SignatureHash(script, txTo, inIdx, hashtype, amount):
         serialize_outputs = txTo.vout[inIdx].serialize()
         hashOutputs = uint256_from_str(hash256(serialize_outputs))
 
+    if (not noinput):
+        outpoint = txTo.vin[inIdx].prevout
+        scriptCode = script
+
     ss = bytes()
     ss += struct.pack("<i", txTo.nVersion)
     ss += ser_uint256(hashPrevouts)
     ss += ser_uint256(hashSequence)
-    ss += txTo.vin[inIdx].prevout.serialize()
-    ss += ser_string(script)
+    ss += outpoint.serialize()
+    ss += ser_string(scriptCode)
     ss += struct.pack("<q", amount)
     ss += struct.pack("<I", txTo.vin[inIdx].nSequence)
     ss += ser_uint256(hashOutputs)
