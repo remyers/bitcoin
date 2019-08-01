@@ -376,6 +376,30 @@ class ECPubKey():
         ret.compressed = self.compressed
         return ret
 
+    # TODO: Break this into musig/single adaptor verification.
+    def verify_adaptor(self, sig, T, R_musig, P_musig, msg):
+        s_data = sig[32:]
+        r_x_data = sig[:32]
+        if (len(s_data)!=32 or len(r_x_data)!=32):
+            return False
+        s = int.from_bytes(s_data, 'big')
+        r_x = int.from_bytes(r_x_data, 'big')
+        if not SECP256K1.is_x_coord(r_x):
+            return False
+        S = SECP256K1.mul([(SECP256K1_G, s)])
+        # TODO: There are possible candidates for the R point.
+        R = SECP256K1.lift_x(r_x)
+        Rn = SECP256K1.negate(R)
+        if jacobi_symbol(R[1], SECP256K1_FIELD_SIZE) != 1:
+            return False
+        # e = H(R_musig_x, P_musig, msg)
+        e = int.from_bytes(hashlib.sha256(R_musig.get_bytes()[1:] + P_musig.get_bytes() + msg).digest(), 'big') % SECP256K1_ORDER
+        Part = SECP256K1.mul([(T.p, 1), (self.p, e)])
+        Sa = SECP256K1.affine(S)
+        if Sa != SECP256K1.affine(SECP256K1.mul([(Part, 1), (R, 1)])) and Sa != SECP256K1.affine(SECP256K1.mul([(Part, 1), (Rn, 1)])):
+            return False
+        return True
+
 class ECKey():
     """A secp256k1 private key"""
 
@@ -584,3 +608,22 @@ def aggregate_musig_signatures(sigs):
         else:
             R_agg = SECP256K1.add_mixed(R_agg, R)
     return SECP256K1.affine(R_agg)[0].to_bytes(32,'big') + s_agg.to_bytes(32,'big')
+
+def tweak_signature(sig, t_data, negate=False):
+    """Tweak a signature, or subtract tweak from a tweaked signature."""
+    s = sig[32:]
+    assert(len(s)==32 and len(t_data)==32)
+    t = int.from_bytes(t_data, 'big')
+    if negate is True:
+        t = (SECP256K1_ORDER - t) % SECP256K1_ORDER
+    s_adaptor = (int.from_bytes(s, 'big') + t) % SECP256K1_ORDER
+    return sig[:32] + s_adaptor.to_bytes(32, 'big')
+
+def get_adaptor_tweak(adaptor_sig, sig):
+    """Compute secret from adaptor and regular signatures."""
+    assert(len(sig[32:]) == 32 and len(adaptor_sig[32:]) == 32)
+    s = int.from_bytes(sig[32:], 'big')
+    sa = int.from_bytes(adaptor_sig[32:], 'big')
+    t = (sa + (SECP256K1_ORDER - s)% SECP256K1_ORDER ) % SECP256K1_ORDER
+    assert(t != 0)
+    return t.to_bytes(32,'big')
