@@ -400,6 +400,18 @@ class ECPubKey():
             return False
         return True
 
+    def generate_dlc(self, msg, V, R):
+        R_a = SECP256K1.affine(R.p)
+        assert(jacobi_symbol(R_a[1], SECP256K1_FIELD_SIZE) == 1)
+        e = int.from_bytes(hashlib.sha256(R_a[0].to_bytes(32, 'big') + V.get_bytes() + msg).digest(), 'big') % SECP256K1_ORDER
+        S = SECP256K1.mul([(R.p, 1), (V.p, e)])
+        ret_p = SECP256K1.add(self.p, S)
+        ret = ECPubKey()
+        ret.p = ret_p
+        ret.valid = True
+        ret.compressed = True
+        return ret
+
 class ECKey():
     """A secp256k1 private key"""
 
