@@ -131,6 +131,8 @@ BASE_SCRIPTS = [
     'wallet_createwallet.py --usecli',
     'wallet_watchonly.py',
     'wallet_watchonly.py --usecli',
+    'feature_musig.py',
+    'feature_musig_tweaked.py',
     'interface_http.py',
     'interface_rpc.py',
     'rpc_psbt.py',
