@@ -834,15 +834,15 @@ def IsCheckSigAdd(script):
 def ParseDesc(desc, tag, op, cl):
     op_tag = tag+op
     assert(desc[:len(op_tag)] == op_tag)
-    desc = desc[len(op_tag):]
-    depth = 1
+    desc = desc[len(op_tag):-1]
+    depth = 0
     for t in desc:
         if t == op:
             depth += 1
         if t == cl:
             depth -= 1
     if depth == 0:
-        return desc[:(len(desc)-1)]
+        return desc
     else:
         # Malformed descriptor.
         raise Exception
@@ -952,6 +952,8 @@ class TapLeaf:
 
     @staticmethod
     def generate_threshold_csa(n, pubkeys):
+        if n == 1:
+            raise Exception('n must be larger than 1.')
         pubkeys_b = [pubkey.get_bytes() for pubkey in pubkeys]
         pubkeys_b.sort()
         key_sets = list(itertools.combinations(iter(pubkeys_b), n))
@@ -990,7 +992,7 @@ class TapTree:
         pk.set(binascii.unhexlify(desc[3:69]))
         if len(desc)>71 and desc[:3] == 'tp(' and pk.is_valid and desc[69] == ',' and desc[-1] == ')':
             self.key = pk
-            TapTree._decode_tree(desc[70:-1], self.root)        
+            self._decode_tree(desc[70:-1], parent=self.root)
         else:
             raise Exception
 
@@ -1012,10 +1014,12 @@ class TapTree:
 
     @property
     def desc(self):
-        # TODO: handle single script case. 
         if self.key.is_valid and self.root!= None:
             res = 'tp(' +  self.key.get_bytes().hex() + ','
-            res += TapTree._encode_tree(self.root) 
+            if isinstance(self.root, TapLeaf):
+                res += self.root.desc
+            else:
+                res += TapTree._encode_tree(self.root)
             res += ')'
             return res
         else:
@@ -1025,6 +1029,10 @@ class TapTree:
     @staticmethod
     def _encode_tree(node):
         string = '['
+        if isinstance(node, TapLeaf):
+            string += node.desc
+            string += ']'
+            return string
         if isinstance(node.left, TapLeaf):
             string += node.left.desc
         else:
@@ -1037,43 +1045,43 @@ class TapTree:
         string += ']'
         return string
 
-    @staticmethod
-    def _decode_tree(string, parent=None):            
+    # @staticmethod
+    def _decode_tree(self, string, parent=None):
         l, r = TapTree._parse_tuple(string)
-
+        if not r:
+            self.root = TapLeaf()
+            self.root.from_desc(l)
+            return
         if (l[0] == '[' and l[-1] == ']'):
             parent.left = Node()
-            TapTree._decode_tree(l, parent.left)
+            self._decode_tree(l, parent=parent.left)
         else:
             parent.left = TapLeaf()
-            parent.left.from_desc(l) 
-
+            parent.left.from_desc(l)
         if (r[0] == '[' and r[-1] == ']'):
             parent.right = Node()
-            TapTree._decode_tree(r, parent.right)
+            self._decode_tree(r, parent=parent.right)
         else:
             parent.right = TapLeaf()
-            parent.right.from_desc(r) 
+            parent.right.from_desc(r)
 
     @staticmethod
     def _parse_tuple(ts):
-        # [left, right]
-        if not ts[0] == '[' and ts[-1] == ']':
-            raise Exception
-        ts = ts[1:]
-        depth = 1
-        # Split when the comma is a depth 0
+        ts = ts[1:-1]
+        depth = 0
         l, r = None, None
         for idx, ch in enumerate(ts):
-            if depth == 1 and ch == ',':
-                # Split string
-                l,r = ts[:idx], ts[idx+1:-1]                  
-            if ch == '[':
+            if depth == 0 and ch == ',':
+                l,r = ts[:idx], ts[idx+1:]
+                break
+            if ch == '[' or ch == '(':
                 depth += 1
-            if ch == ']':
+            if ch == ']' or ch == ')':
                 depth -= 1
-        if depth == 0 and l and r:
+        if depth == 0 and (l and r):
             return l, r
+        elif depth == 0:
+            return ts, ''
         else:
             # Malformed tuple.
             raise Exception
