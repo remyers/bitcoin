@@ -825,7 +825,7 @@ def IsPayToPubkey(script):
     return pk.is_valid and len(script) == 35 and script[-1] == OP_CHECKSIG
 
 def IsCheckSigAdd(script):
-    if script[-1] == OP_EQUAL and isinstance(script[-2], int) and script[-3] == OP_CHECKSIGADD: 
+    if script[-1] == OP_EQUAL and isinstance(script[-2], int) and script[-3] == OP_CHECKSIGADD:
         #TODO: Verify pubkey/checksigadd sequence.
         return True
     else:
@@ -848,13 +848,12 @@ def ParseDesc(desc, tag, op, cl):
         raise Exception
 
 class TapLeaf:
-
     def __init__(self, script=CScript(), version=DEFAULT_TAPSCRIPT_VER):
         self.script = script
-        self.keys = None 
+        self.keys = None
         self.musig = False
         self.version = version
-    
+
     def from_keys(self, keys):
         if len(keys) == 1:
             if keys[0].is_valid:
@@ -868,13 +867,13 @@ class TapLeaf:
 
     def from_script(self, script):
         if IsPayToPubkey(script):
-            self.keys = [script[1:34]] 
+            self.keys = [script[1:34]]
         elif IsCheckSigAdd(script):
             self.keys = []
             for op in script:
                 if isinstance(op, bytes):
                     self.keys.append(ECPubKey())
-                    self.keys[-1].set(op)        
+                    self.keys[-1].set(op)
         self.script = script
 
     def from_desc(self,string):
@@ -882,9 +881,9 @@ class TapLeaf:
         tss = ParseDesc(string, 'ts', '(',')')
 
         if tss[:2]=='pk':
-            pks = ParseDesc(tss, 'pk' ,'(' ,')') #TODO: Not necessary.
+            pks = ParseDesc(tss, 'pk' ,'(' ,')')
             self.keys = [ECPubKey()]
-            self.keys[0].set(binascii.unhexlify(pks)) 
+            self.keys[0].set(binascii.unhexlify(pks))
             if not self.keys[0].is_valid:
                 self.keys = None
                 raise Exception
@@ -894,7 +893,7 @@ class TapLeaf:
         elif tss[:3] == 'csa':
             # TODO: Handle single CSA.
             # Set comma as end marker
-            ss = ParseDesc(tss, 'csa' ,'(' ,')') + ',' 
+            ss = ParseDesc(tss, 'csa' ,'(' ,')') + ','
             pks = ''
             pkv = []
             for ch in ss:
@@ -902,84 +901,86 @@ class TapLeaf:
                     pkv.append(ECPubKey())
                     pkv[-1].set(binascii.unhexlify(pks))
                     pks = ''
-                else:    
-                    pks += ch               
+                else:
+                    pks += ch
             self.script = TapLeaf.generate_csa_script(pkv)
-            self.keys = pkv    
-    
+            self.keys = pkv
+
         elif tss[:3] =='raw':
             self.script = CScript(binascii.unhexlify(tss[4:-1]))
 
         else:
+            # TODO: Description.
             raise Exception
 
     @property
-    def desc(self):    
+    def desc(self):
         if IsPayToPubkey(self.script):
             return 'ts('+'pk('+ self.keys[0].hex() + 2*')'
-        
+
         elif IsCheckSigAdd(self.script):
             res = 'ts(csa('
             for pk in self.keys:
                 res += pk.get_bytes().hex()
                 if pk != self.keys[-1]:
                     res += ','
-            return res + '))'        
+            return res + '))'
 
-        else: 
-            return 'ts(raw(' + self.script.hex() + '))'   
+        else:
+            return 'ts(raw(' + self.script.hex() + '))'
 
     @staticmethod
     def generate_csa_script(pubkeys):
         sv = []
         for pk in pubkeys:
             if not pk.is_valid:
-                raise Exception            
+                raise Exception
             sv.append(pk.get_bytes())
             if pk == pubkeys[0]:
                 sv.append(OP_CHECKSIG)
             else:
-                sv.append(OP_CHECKSIGADD)        
+                sv.append(OP_CHECKSIGADD)
         sv.append(len(pubkeys))
         sv.append(OP_EQUAL)
         return CScript(sv)
 
-    # TODO: Not nice, but seems to be necessary for sorting by priority queue.
+    # TODO: Not nice, necessary for sorting priority queue.
     def __lt__(self, other):
         return True
     def __gt__(self, other):
         return True
 
-    @staticmethod 
+    @staticmethod
     def generate_threshold_csa(n, pubkeys):
-        pubkeys_b = [pubkey.get_bytes() for pubkey in pubkeys] 
-        pubkeys_b.sort() 
+        pubkeys_b = [pubkey.get_bytes() for pubkey in pubkeys]
+        pubkeys_b.sort()
         key_sets = list(itertools.combinations(iter(pubkeys_b), n))
         tapscripts = []
         pubkeys_map = {}
-        for set in key_sets:
+        for key_set in key_sets:
             # TODO: use generate_csa_script.
             op_array = []
-            for pubkey_b in set:
-                op_array += [pubkey_b] 
-                if pubkey_b == set[0]:
+            for pubkey_b in key_set:
+                op_array += [pubkey_b]
+                if pubkey_b == key_set[0]:
                     op_array += [OP_CHECKSIG]
                 else:
                     op_array += [OP_CHECKSIGADD]
             op_array += [n, OP_EQUAL]
             tapscript = TapLeaf()
-            tapscript.from_script(CScript(op_array))   
+            tapscript.from_script(CScript(op_array))
             tapscripts.append(tapscript)
-            pubkeys_map[tapscript] = set 
-        return tapscripts, pubkeys_map    
+            pubkeys_map[tapscript] = key_set
+        return tapscripts, pubkeys_map
 
     # TODO: Generate n-of-n pk tapleafs from n-of-m.
-    @classmethod    
+    @classmethod
     def generate_threshold_pk(self, n, pks):
         pass
 
 class TapTree:
     def __init__(self):
+        # TODO: Init with internal key/version
         self.root = Node()
         self.key = ECPubKey()
 
@@ -993,7 +994,7 @@ class TapTree:
         else:
             raise Exception
 
-    # Tree construction policy expressed as list(int, TapScript)
+    # Tree construction from list(weight(int), TapScript)
     def from_policy(self, weight_tap_list):
         # TODO: By probability and weight.
         p = queue.PriorityQueue()
@@ -1001,11 +1002,11 @@ class TapTree:
             p.put(weight_tap)
         while p.qsize() > 1:
             l, r = p.get(), p.get()
-            node = Node()  
+            node = Node()
             node.left, node.right = l[1], r[1]
             p.put((l[0]+r[0], node))
-        self.root = p.get()[1]                            
-        
+        self.root = p.get()[1]
+
     def set_key(self, data):
         self.key.set(data)
 
@@ -1017,8 +1018,9 @@ class TapTree:
             res += TapTree._encode_tree(self.root) 
             res += ')'
             return res
-        else: 
-            return None    
+        else:
+            # TODO: Exception message.
+            raise Exception
 
     @staticmethod
     def _encode_tree(node):
@@ -1026,13 +1028,13 @@ class TapTree:
         if isinstance(node.left, TapLeaf):
             string += node.left.desc
         else:
-            string += TapTree._encode_tree(node.left) 
+            string += TapTree._encode_tree(node.left)
         string += ','
         if isinstance(node.right, TapLeaf):
             string += node.right.desc
         else:
             string += TapTree._encode_tree(node.right)
-        string += ']'    
+        string += ']'
         return string
 
     @staticmethod
