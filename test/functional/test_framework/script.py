@@ -1026,6 +1026,37 @@ class TapTree:
             # TODO: Exception message.
             raise Exception
 
+    def construct(self):
+        ctrl, h = self._constructor(self.root)
+        tweak = TaggedHash("TapTweak", self.key.get_bytes() + h)
+        control_map = dict((script, GetVersionTaggedPubKey(self.key, version) + control) for version, script, control in ctrl)
+        tweaked = self.key.tweak_add(tweak)
+        return (CScript([OP_1, GetVersionTaggedPubKey(tweaked, TAPROOT_VER)]), tweak, control_map)
+
+    @staticmethod
+    def _constructor(node):
+        if isinstance(node, TapLeaf):
+            h = TaggedHash("TapLeaf", bytes([node.version & 0xfe]) + ser_string(node.script))
+            ctrl = [(node.version, node.script, bytes())]
+            return ctrl, h
+        if isinstance(node.left, TapLeaf):
+            h_l = TaggedHash("TapLeaf", bytes([node.left.version & 0xfe]) + ser_string(node.left.script))
+            ctrl_l = [(node.left.version, node.left.script, bytes())]
+        else:
+            ctrl_l, h_l  = TapTree._constructor(node.left)
+        if isinstance(node.right, TapLeaf):
+            h_r = TaggedHash("TapLeaf", bytes([node.right.version & 0xfe]) + ser_string(node.right.script))
+            ctrl_r = [(node.right.version, node.right.script, bytes())]
+        else:
+            ctrl_r, h_r = TapTree._constructor(node.right)
+
+        ctrl_l = [(version, script, ctrl + h_r) for version, script, ctrl in ctrl_l]
+        ctrl_r = [(version, script, ctrl + h_l) for version, script, ctrl in ctrl_r]
+        if h_r < h_l:
+            h_r, h_l = h_l, h_r
+        h = TaggedHash("TapBranch", h_l + h_r)
+        return (ctrl_l + ctrl_r , h)
+
     @staticmethod
     def _encode_tree(node):
         string = '['
