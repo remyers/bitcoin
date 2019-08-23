@@ -848,22 +848,24 @@ def ParseDesc(desc, tag, op, cl):
 
 class TapLeaf:
     def __init__(self, script=CScript(), version=DEFAULT_TAPSCRIPT_VER):
-        self.script = script
-        self.keys = None
-        self.musig = False
         self.version = version
+        self.script = script
+        self.miniscript = None
+        self.sat = None
+        self.keys = None # TODO: Remove.
 
     def from_keys(self, keys):
         if len(keys) == 1:
             if keys[0].is_valid:
-                self.keys = [keys[0].get_bytes()]
-                self.script = CScript([keys[0].get_bytes(), OP_CHECKSIG])
+                self.construct_pk(keys[0])
             else:
                 raise Exception
+        elif len(keys) > 1:
+            self.construct_csa(len(keys), keys)
         else:
-            self.script = TapLeaf.generate_csa_script(keys)
-            self.keys = keys
+            raise Exception
 
+    # TODO: use raw constructor here.
     def from_script(self, script):
         if IsPayToPubkey(script):
             self.keys = [script[1:34]]
@@ -875,113 +877,212 @@ class TapLeaf:
                     self.keys[-1].set(op)
         self.script = script
 
+    def construct_pk(self, key): #ECPubKey
+        pk_node = miniscript.pk(key.get_bytes())
+        self._set_miniscript(miniscript.c(pk_node))
+        self.desc = TapLeaf._desc_serializer('pk',key.get_bytes().hex())
+
+    def construct_pkolder(self, key, n): #ECPubKey, int
+        pk_node = miniscript.pk(key.get_bytes())
+        older_node = miniscript.older(n)
+        v_c_pk_node = miniscript.v(miniscript.c(pk_node))
+        self._set_miniscript(miniscript.and_v(v_c_pk_node, older_node))
+        self.desc = TapLeaf._desc_serializer('pkolder', key.get_bytes().hex(), str(n))
+
+    def construct_pkhash(self, key, data): #ECPubKey, 20B, int
+        pk_node = miniscript.pk(key.get_bytes())
+        hash_node = miniscript.ripemd160(data)
+        v_c_pk_node = miniscript.v(miniscript.c(pk_node))
+        self._set_miniscript(miniscript.and_v(v_c_pk_node, hash_node))
+        self.desc = TapLeaf._desc_serializer('pkhash', key.get_bytes().hex(), data.hex())
+
+    def construct_pkhasholder(self, key, data, n): #ECPubKey, 20B, int
+        pk_node = miniscript.pk(key.get_bytes())
+        older_node = miniscript.older(n)
+        v_hash_node = miniscript.v(miniscript.ripemd160(data))
+        v_c_pk_node = miniscript.v(miniscript.c(pk_node))
+        self._set_miniscript(miniscript.and_v(v_c_pk_node, miniscript.and_v(v_hash_node, older_node)))
+        self.desc = TapLeaf._desc_serializer('pkhasholder', key.get_bytes().hex(), data.hex(),str(n))
+
+    def construct_csa(self, k, *args): #int, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        self._set_miniscript(thresh_csa_node)
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csa', str(k), *keys_string)
+
+    def construct_csaolder(self, n, k, *args):  #int, int, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        v_thresh_csa_node = miniscript.v(thresh_csa_node)
+        older_node = miniscript.older(n)
+        self._set_miniscript(miniscript.and_v(v_thresh_csa_node, older_node))
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csaolder', str(k), *keys_string, str(n))
+
+    def construct_csahash(self, data, k, *args): #int, 20B, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        v_thresh_csa_node = miniscript.v(thresh_csa_node)
+        hash_node = miniscript.ripemd160(data)
+        self._set_miniscript(miniscript.and_v(v_thresh_csa_node, hash_node))
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csahash', str(k), *keys_string, data.hex())
+
+    def construct_csahasholder(self, n, data, k, *args): #int, 20B, int, ECPubKey ...
+        keys_data = [key.get_bytes() for key in args]
+        thresh_csa_node = miniscript.thresh_csa(k, *keys_data)
+        v_thresh_csa_node = miniscript.v(thresh_csa_node)
+        hash_node = miniscript.ripemd160(data)
+        v_hash_node = miniscript.v(hash_node)
+        older_node = miniscript.older(n)
+        self._set_miniscript(miniscript.and_v(v_thresh_csa_node, miniscript.and_v(v_hash_node, older_node)))
+        keys_string = [data.hex() for data in keys_data]
+        self.desc = TapLeaf._desc_serializer('csahasholder', str(k), *keys_string, data.hex(),str(n))
+
+    def _set_miniscript(self, miniscript):
+        self.miniscript = miniscript
+        self.script = CScript(self.miniscript.script)
+        self.sat = self.miniscript.sat_xy
+
+    @staticmethod
+    def _desc_serializer(tag, *args):
+        desc = 'ts(' + tag + '('
+        for arg in args[:-1]:
+            desc += arg + ','
+        desc += args[-1] + '))'
+        return desc
+
     def from_desc(self,string):
+
         string = ''.join(string.split())
         tss = ParseDesc(string, 'ts', '(',')')
 
-        if tss[:2]=='pk':
-            pks = ParseDesc(tss, 'pk' ,'(' ,')')
-            self.keys = [ECPubKey()]
-            self.keys[0].set(binascii.unhexlify(pks))
-            if not self.keys[0].is_valid:
-                self.keys = None
-                raise Exception
-            else:
-                self.from_keys(self.keys)
+        if tss[:3] == 'pk(':
+            expr_s = ParseDesc(tss, 'pk' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            self.construct_pk(pk)
 
-        elif tss[:3] == 'csa':
-            # TODO: Handle single CSA.
-            # Set comma as end marker
-            ss = ParseDesc(tss, 'csa' ,'(' ,')') + ','
-            pks = ''
+        elif tss[:8] == 'pkolder(':
+            expr_s = ParseDesc(tss, 'pkolder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            self.construct_pkolder(pk, int(args[1]))
+
+        elif tss[:7] == 'pkhash(':
+            expr_s = ParseDesc(tss, 'pkhash' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            data = bytes.fromhex(args[1])
+            self.construct_pkhash(pk, data)
+
+        elif tss[:12] == 'pkhasholder(':
+            expr_s = ParseDesc(tss, 'pkhasholder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            pk = ECPubKey()
+            pk.set(bytes.fromhex(args[0]))
+            data = bytes.fromhex(args[1])
+            self.construct_pkhasholder(pk, data, int(args[2]))
+
+        elif tss[:4] == 'csa(':
+            expr_s = ParseDesc(tss, 'csa' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
             pkv = []
-            for ch in ss:
-                if ch == ',':
-                    pkv.append(ECPubKey())
-                    pkv[-1].set(binascii.unhexlify(pks))
-                    pks = ''
-                else:
-                    pks += ch
-            self.script = TapLeaf.generate_csa_script(pkv)
-            self.keys = pkv
+            for key_string in args[1:]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            self.construct_csa(k, *pkv)
 
-        elif tss[:3] =='raw':
+        elif tss[:9] == 'csaolder(':
+            expr_s = ParseDesc(tss, 'csaolder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:-1]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            time = int(args[-1])
+            self.construct_csaolder(time, k, *pkv)
+
+        elif tss[:8] == 'csahash(':
+            expr_s = ParseDesc(tss, 'csahash' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:-1]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            data = bytes.fromhex(args[-1])
+            self.construct_csahash(data, k, *pkv)
+
+        elif tss[:13] == 'csahasholder(':
+            expr_s = ParseDesc(tss, 'csahasholder' ,'(' ,')')
+            args = self._param_parser(expr_s)
+            k = int(args[0])
+            pkv = []
+            for key_string in args[1:-2]:
+                pk = ECPubKey()
+                pk.set(bytes.fromhex(key_string))
+                pkv.append(pk)
+            data = bytes.fromhex(args[-2])
+            time = int(args[-1])
+            self.construct_csahasholder(time, data, k, *pkv)
+
+        elif tss[:4] =='raw(':
             self.script = CScript(binascii.unhexlify(tss[4:-1]))
 
         else:
-            # TODO: Description.
-            raise Exception
-
-    @property
-    def desc(self):
-        if IsPayToPubkey(self.script):
-            return 'ts('+'pk('+ self.keys[0].hex() + 2*')'
-
-        elif IsCheckSigAdd(self.script):
-            res = 'ts(csa('
-            for pk in self.keys:
-                res += pk.get_bytes().hex()
-                if pk != self.keys[-1]:
-                    res += ','
-            return res + '))'
-
-        else:
-            return 'ts(raw(' + self.script.hex() + '))'
+            raise Exception('Tapscript descriptor not recognized.')
 
     @staticmethod
-    def generate_csa_script(pubkeys):
-        sv = []
-        for pk in pubkeys:
-            if not pk.is_valid:
-                raise Exception
-            sv.append(pk.get_bytes())
-            if pk == pubkeys[0]:
-                sv.append(OP_CHECKSIG)
-            else:
-                sv.append(OP_CHECKSIGADD)
-        sv.append(len(pubkeys))
-        sv.append(OP_EQUAL)
-        return CScript(sv)
+    def _param_parser(expr_string):
+        args = []
+        idx_ = 0
+        expr_string_ = expr_string
+        for idx, ch in enumerate(expr_string):
+            if ch == ',':
+                args.append(expr_string[idx_:idx])
+                idx_ = idx+1
+                expr_string_ = expr_string[idx_:]
+        args.append(expr_string_)
+        return args
 
     # TODO: Not nice, necessary for sorting priority queue.
     def __lt__(self, other):
         return True
+
     def __gt__(self, other):
         return True
 
     @staticmethod
     def generate_threshold_csa(n, pubkeys):
-        if n == 1:
-            raise Exception('n must be larger than 1.')
+        if n == 1 or len(pubkeys) <= n:
+            raise Exception
         pubkeys_b = [pubkey.get_bytes() for pubkey in pubkeys]
         pubkeys_b.sort()
-        key_sets = list(itertools.combinations(iter(pubkeys_b), n))
+        pubkey_b_sets = list(itertools.combinations(iter(pubkeys_b), n))
         tapscripts = []
-        pubkeys_map = {}
-        for key_set in key_sets:
-            # TODO: use generate_csa_script.
-            op_array = []
-            for pubkey_b in key_set:
-                op_array += [pubkey_b]
-                if pubkey_b == key_set[0]:
-                    op_array += [OP_CHECKSIG]
-                else:
-                    op_array += [OP_CHECKSIGADD]
-            op_array += [n, OP_EQUAL]
+        for pubkey_b_set in pubkey_b_sets:
+            pubkey_set = []
+            for pubkey_b in pubkey_b_set:
+                pk = ECPubKey()
+                pk.set(pubkey_b)
+                pubkey_set.append(pk)
             tapscript = TapLeaf()
-            tapscript.from_script(CScript(op_array))
+            tapscript.construct_csa(len(pubkey_set), *pubkey_set)
             tapscripts.append(tapscript)
-            pubkeys_map[tapscript] = key_set
-        return tapscripts, pubkeys_map
-
-    # TODO: Generate n-of-n pk tapleafs from n-of-m.
-    @classmethod
-    def generate_threshold_pk(self, n, pks):
-        pass
+        return tapscripts
 
 class TapTree:
     def __init__(self):
-        # TODO: Init with internal key/version
         self.root = Node()
         self.key = ECPubKey()
 
@@ -996,11 +1097,10 @@ class TapTree:
             raise Exception
 
     # Tree construction from list(weight(int), TapScript)
-    def from_policy(self, weight_tap_list):
-        # TODO: By probability and weight.
+    def huffman_constructor(self, tuple_list):
         p = queue.PriorityQueue()
-        for weight_tap in weight_tap_list:
-            p.put(weight_tap)
+        for weight_tapleaf in tuple_list:
+            p.put(weight_tapleaf)
         while p.qsize() > 1:
             l, r = p.get(), p.get()
             node = Node()
@@ -1015,10 +1115,7 @@ class TapTree:
     def desc(self):
         if self.key.is_valid and self.root!= None:
             res = 'tp(' +  self.key.get_bytes().hex() + ','
-            if isinstance(self.root, TapLeaf):
-                res += self.root.desc
-            else:
-                res += TapTree._encode_tree(self.root)
+            res += TapTree._encode_tree(self.root)
             res += ')'
             return res
         else:
@@ -1075,7 +1172,6 @@ class TapTree:
         string += ']'
         return string
 
-    # @staticmethod
     def _decode_tree(self, string, parent=None):
         l, r = TapTree._parse_tuple(string)
         if not r:
