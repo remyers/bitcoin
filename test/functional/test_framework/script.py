@@ -826,7 +826,6 @@ def IsPayToPubkey(script):
 
 def IsCheckSigAdd(script):
     if script[-1] == OP_EQUAL and isinstance(script[-2], int) and script[-3] == OP_CHECKSIGADD:
-        #TODO: Verify pubkey/checksigadd sequence.
         return True
     else:
         return False
@@ -1122,8 +1121,202 @@ class Node(object):
     def __init__(self, left=None, right=None):
         self.left = left
         self.right = right
+
     # TODO: Not nice, but seems to be necessary for sorting by priority queue.
     def __lt__(self, other):
         return True
+
     def __gt__(self, other):
         return True
+
+# Miniscript Node.
+class node_type:
+    def __init__(self, script=False, nsat=False, sat_xy=False, sat_z=False, typ=False, corr=False, mal=False, children=False, childnum=None):
+        self._script = script
+        self._nsat = nsat
+        self._sat_xy = sat_xy
+        self._sat_z= sat_z
+        self._typ = typ
+        self._corr = corr
+        self._mal = mal
+        self.children = children # [x,y,z]
+
+        # Assert all corr/mal/child members are defined.
+        assert(all (key in corr(children).keys() for key in ('z','o','n','d','u')))
+        for _ , value in vars(self).items():
+            assert(value != None)
+        # assert(len(children)==3) # This doesn't hold with threshold.
+
+    def __getattr__(self,name):
+        attr = getattr(self, '_'+name)
+        if attr != None:
+            # All lambda's must accept children argument.
+            return attr(self.children)
+        else:
+            return None
+
+# Factory class to generate miniscript nodes.
+class miniscript:
+    @staticmethod
+    def decode(string):
+        tag, exprs = miniscript._parse(string)
+
+        # Return terminal expressions:
+        # ['pk','pk_h','older','after','sha256','hash256','ripemd160','hash160','1','0']:
+        if tag in ['pk','pk_h', 'older', 'ripemd160', 'thresh_csa']:
+
+            if tag in ['pk', 'pk_h']:
+                key_b = bytes.fromhex(exprs[0])
+                return getattr(miniscript, tag)(key_b)
+
+            elif tag in ['older']:
+                n = int(exprs[0])
+                return getattr(miniscript, tag)(n)
+
+            elif tag in ['ripemd160']:
+                digest = bytes.fromhex(exprs[0])
+                return getattr(miniscript, tag)(digest)
+
+            elif tag in ['thresh_csa']:
+                k = int(exprs[0])
+                keys = []
+                for key_string in exprs[1:]:
+                    key_data = bytes.fromhex(key_string)
+                    keys.append(key_data)
+                return getattr(miniscript, tag)(k, *keys)
+
+        child_nodes = []
+        for expr in exprs:
+            child_nodes.append(miniscript.decode(expr))
+        return getattr(miniscript, tag)(*child_nodes)
+
+    @staticmethod
+    def _parse(string):
+        # TODO: Handle single arg case.
+        string = ''.join(string.split())
+        depth = 0
+        tag = ''
+        exprs = []
+        for idx, ch in enumerate(string):
+            if ch == ':' and depth == 0:
+                return string[:idx], [string[idx+1:]]
+            if ch == '(':
+                depth += 1
+                if depth == 1:
+                    tag = string[:idx]
+                    prev_idx = idx
+            if ch == ')':
+                depth -= 1
+                if depth == 0:
+                    exprs.append(string[prev_idx+1:idx])
+            if depth == 1 and ch == ',':
+                exprs.append(string[prev_idx+1:idx])
+                prev_idx = idx
+        if depth == 0 and bool(tag) and bool(exprs):
+            return tag, exprs
+        else:
+            raise Exception('Malformed miniscript string.')
+
+    @staticmethod
+    def pk(key):
+        assert((key[0] in [0x02, 0x03]) or (key[0] not in [0x04, 0x06, 0x07]))
+        assert(len(key) == 33)
+        script = lambda x: [key]
+        nsat = lambda x: [0]
+        sat_xy = lambda x: [('sig', key)]
+        sat_z = lambda x: [False]
+        typ = lambda x: 'K' # Only one possible.
+        corr = lambda x: {'z': False,'o': True, 'n': True, 'd': True, 'u': True}
+        mal = lambda x: {'e': True,'f': False, 'm': True, 's': True}
+        children = [None, None, None] # Terminal.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def older(n):
+        assert(n >= 1 and n < 2**32)
+        script = lambda x: [CScriptNum(n), OP_CHECKSEQUENCEVERIFY]
+        nsat = lambda x: [False]
+        sat_xy = lambda x: []
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B'
+        corr = lambda x: {'z': True,'o': False, 'n': False, 'd': False, 'u': False}
+        mal = lambda x: {'e': False,'f': True, 'm': True, 's': False}
+        children = [None, None, None] # Terminal.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def ripemd160(data):
+        assert(len(data) == 20)
+        script = lambda x: [OP_SIZE, CScriptNum(32), OP_EQUALVERIFY, OP_RIPEMD160, data, OP_EQUAL]
+        nsat = lambda x: [b'\x00'*32] # Not non-malleably.
+        sat_xy = lambda x: [('preimage', data)]
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B'
+        corr = lambda x: {'z': False,'o': True, 'n': True, 'd': True, 'u': True}
+        mal = lambda x: {'e': False,'f': False, 'm': True, 's': False}
+        children = [None, None, None] # Terminal.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def c(expr):
+        script = lambda x: x[0].script + [OP_CHECKSIG]
+        nsat = lambda x: x[0].nsat
+        sat_xy = lambda x: x[0].sat_xy
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B' if x[0].typ == 'K' else False
+        corr = lambda x: {'z': False,'o': x[0].corr['o'], 'n': x[0].corr['n'], 'd': x[0].corr['d'], 'u': True}
+        mal = lambda x: {'f': False, 'e': x[0].mal['e'], 'm': x[0].mal['m'], 's': x[0].mal['s']}
+        children = [expr, None, None]
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def v(expr):
+        script = lambda x: x[0].script + [OP_VERIFY]
+        nsat = lambda x: [False]
+        sat_xy = lambda x: x[0].sat_xy
+        sat_z = lambda x: [False]
+        typ = lambda x: 'V' if x[0].typ == 'B' else False
+        corr = lambda x: {'z': x[0].corr['z'],'o': x[0].corr['o'], 'n': x[0].corr['n'], 'd': False, 'u': False}
+        mal = lambda x: {'f': True, 'e': False, 'm': x[0].mal['m'], 's': x[0].mal['s']}
+        children = [expr, None, None]
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod
+    def and_v(expr_l, expr_r):
+        script = lambda x: x[0].script + x[1].script
+        nsat = lambda x: [False]
+        sat_xy = lambda x: x[1].sat_xy + x[0].sat_xy
+        sat_z = lambda x: [False]
+        typ = lambda x:\
+            'B' if (x[0].typ == 'V' and x[1].typ == 'B') else\
+            'K' if (x[0].typ == 'V' and x[1].typ == 'K') else\
+            'V' if (x[0].typ == 'V' and x[1].typ == 'V') else False
+        corr = lambda x: {\
+            'z': bool(x[0].corr['z']*x[1].corr['z']),\
+            'o': bool(x[0].corr['z']*x[1].corr['o']+x[0].corr['o']*x[1].corr['z']),\
+            'n': bool(x[0].corr['n']+x[0].corr['z']*x[1].corr['n']),\
+            'd': False,\
+            'u': False}
+        mal = lambda x: {\
+            'f': bool(x[0].mal['f']*x[1].mal['f']),\
+            'e': False,\
+            'm':bool(x[0].mal['m']*x[1].mal['m']),\
+            's': bool(x[0].mal['s']+x[1].mal['s'])}
+        children = [expr_l, expr_r, None]
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
+
+    @staticmethod # TODO:
+    def thresh_csa(k, *args): #arg[0] = k, arg[i>0] = expr_i
+        assert(k > 0 and k <= len(args) and len(args) > 1) # Requires more than 1 pk.
+        for key in args:
+            assert(len(key) == 33)
+            assert(key[0] in [0x02, 0x03]) or (key[0] not in [0x04, 0x06, 0x07])
+        script = lambda x: [args[0], OP_CHECKSIG] + list(itertools.chain.from_iterable([[args[i], OP_CHECKSIGADD] for i in range(1,len(args))])) + [k, OP_NUMEQUAL]
+        nsat = lambda x: [0x00]*len(args)
+        sat_xy = lambda x: [('sig', args[i]) for i in range(0,len(args))][::-1] # TODO: ('thresh(n)', [('sig', (0x02../0x00)), ('sig', (0x02../0x00))])
+        sat_z = lambda x: [False]
+        typ = lambda x: 'B'
+        corr = lambda x: {'z': False,'o': False, 'n': False, 'd': True, 'u': True}
+        mal = lambda x: {'f': False, 'e': True, 'm': True, 's': True}
+        children = [None, None, None] # Terminal expression.
+        return node_type(script=script, nsat=nsat, sat_xy=sat_xy, sat_z=sat_z,  typ=typ, corr=corr, mal=mal,children=children)
