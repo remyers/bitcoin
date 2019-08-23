@@ -148,3 +148,6 @@ class TestWrapper(BitcoinTestFramework):
 
         if cleanup_tree_on_exit:
             shutil.rmtree(self.options.tmpdir)
+
+        # Newly initialized nodes will be appended during setup again.
+        self.nodes.clear()

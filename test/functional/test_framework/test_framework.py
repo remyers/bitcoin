@@ -417,7 +417,7 @@ class BitcoinTestFramework(metaclass=BitcoinTestMetaClass):
 
     def _start_logging(self):
         # Add logger and logging handlers
-        self.log = logging.getLogger('TestFramework')
+        self.log = logging.getLogger('TestFramework.'+ self.options.tmpdir) # Assign new logger name to prevent temp path reuse.
         self.log.setLevel(logging.DEBUG)
         # Create file handler to log all messages
         fh = logging.FileHandler(self.options.tmpdir + '/test_framework.log', encoding='utf-8')
