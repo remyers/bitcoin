@@ -111,7 +111,7 @@ class tapleaf_csa_desc(BitcoinTestFramework):
             taproot_output_point = COutPoint(funding_tx.sha256, taproot_index)
 
             if idx < delayed_tapscripts_idx:
-                taproot_spend_tx.nVersion = 0
+                taproot_spend_tx.nVersion = 1
                 tx_input = CTxIn(outpoint = taproot_output_point)
             else:
                 taproot_spend_tx.nVersion = 2
