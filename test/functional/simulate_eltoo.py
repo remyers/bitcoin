@@ -8,11 +8,8 @@ Simulation tests for eltoo payment channel update scheme
 
 import copy
 from test_framework.base58 import (
-    b58decode,
     b58decode_chk,
-    b58encode,
     b58encode_chk,
-    checksum
 )
 from test_framework.blocktools import (
     create_block,
@@ -21,6 +18,7 @@ from test_framework.blocktools import (
 from test_framework.descriptors import descsum_create
 from test_framework.key import ECKey, ECPubKey
 from test_framework.messages import (
+    COIN,
     COutPoint,
     CScriptWitness,
     CTransaction,
@@ -77,7 +75,8 @@ from test_framework.script import (
 from test_framework.test_framework import BitcoinTestFramework
 from test_framework.util import (
     assert_raises_rpc_error,
-    assert_equal
+    assert_equal,
+    hex_str_to_bytes
 )
 import time
 import random
@@ -87,6 +86,7 @@ NUM_OUTPUTS_TO_COLLECT = 33
 CSV_DELAY = 20
 DUST_LIMIT = 800
 FEE_AMOUNT = 1000
+PAYMENT_AMOUNT = 10000
 CHANNEL_AMOUNT = 1000000
 RELAY_FEE = 100
 NUM_SIGNERS = 2
@@ -413,14 +413,20 @@ class UpdateTx(CTransaction):
 
     def AddWitness(self, node, spend_tx):
         # witness script to spend update tx to update tx
-        self.wit.vtxinwit = [ CTxInWitness() ]
         witness_program = get_eltoo_update_script(node,spend_tx.state, spend_tx.witness, spend_tx.other_witness)
         sig1 = self.witness.update_sig
         sig2 = self.other_witness.update_sig
-        self.wit.vtxinwit[0].scriptWitness = CScriptWitness()
-        self.wit.vtxinwit[0].scriptWitness.stack = [b'', sig1, sig2, witness_program]
-        assert(len(self.vin) == 0)
-        self.vin = [ CTxIn(outpoint = COutPoint(spend_tx.sha256, 0), scriptSig = b"", nSequence=0xFFFFFFFE) ]
+        self.wit.vtxinwit[-1].scriptWitness = CScriptWitness()
+        self.wit.vtxinwit[-1].scriptWitness.stack = [b'', sig1, sig2, witness_program]
+        
+    def AddInputs(self, fee_funder, spend_tx):
+        #   first vin funds the transaction fee only
+        utxo = fee_funder.wallet.listunspent(include_unsafe = False, query_options = {"minimumAmount": FEE_AMOUNT / COIN, "maximumCount":1})[0]
+        self.vin = [ CTxIn(outpoint = COutPoint(int(utxo['txid'],16), utxo['vout']), scriptSig = b"", nSequence=0xFFFFFFFE) ]
+        #   vout[1] of spend_tx spends the channel balance output of an update tx to a new update tx
+        self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, 1), scriptSig = b"", nSequence=0xFFFFFFFE) )
+        #   first vout is the new change address, with same P2WKH as funding transaction
+        self.vout.insert(0, CTxOut(int(utxo['amount']*COIN - FEE_AMOUNT), hex_str_to_bytes(utxo['scriptPubKey'])))
 
 class SettleTx(CTransaction):
     __slots__ = ("payment_channel")
@@ -517,14 +523,21 @@ class SettleTx(CTransaction):
     def AddWitness(self, node, spend_tx):
         # witness script to spend update tx to settle tx
         assert spend_tx.state == self.payment_channel.state
-        self.wit.vtxinwit = [ CTxInWitness() ]
+        spend_tx.rehash()
         witness_program = get_eltoo_update_script(node, spend_tx.state, spend_tx.witness, spend_tx.other_witness)
         sig1 = self.payment_channel.witness.settle_sig
         sig2 = self.payment_channel.other_witness.settle_sig
-        self.wit.vtxinwit[0].scriptWitness = CScriptWitness()
-        self.wit.vtxinwit[0].scriptWitness.stack = [b'', sig1, sig2, b'', b'', b'', witness_program]
-        assert(len(self.vin) == 0)
-        self.vin = [ CTxIn(outpoint = COutPoint(spend_tx.sha256, 0), scriptSig = b"", nSequence=CSV_DELAY) ]
+        self.wit.vtxinwit[-1].scriptWitness = CScriptWitness()
+        self.wit.vtxinwit[-1].scriptWitness.stack = [b'', sig1, sig2, b'', b'', b'', witness_program]
+
+    def AddInputs(self, fee_funder, spend_tx):
+        #   first vin funds the transaction fee only
+        utxo = fee_funder.wallet.listunspent(include_unsafe = False, query_options = {"minimumAmount": FEE_AMOUNT / COIN, "maximumCount":1})[0]
+        self.vin = [ CTxIn(outpoint = COutPoint(int(utxo['txid'],16), utxo['vout']), scriptSig = b"", nSequence=0xFFFFFFFE) ]
+        #   vout[1] of spend_tx spends the channel balance output of an update tx to a settle tx
+        self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, 1), scriptSig = b"", nSequence=CSV_DELAY) )
+        #   first vout is the new change address, with same P2WKH as funding transaction
+        self.vout.insert(0, CTxOut(int(utxo['amount']*COIN - FEE_AMOUNT), hex_str_to_bytes(utxo['scriptPubKey'])))
 
 class RedeemTx(CTransaction):
     __slots__ = ("payment_channel", "secrets", "is_funder", "settled_only", "include_invalid", "block_time")
@@ -579,33 +592,13 @@ class RedeemTx(CTransaction):
         #   add channel output
         self.vout = [ CTxOut(settled_amount, script_pkh) ] # channel balance
 
-    def AddWitness(self, node, channel_partner, spend_tx, settled_only):
+    def AddWitness(self, node, channel_partner, spend_tx, settled_only=False):
         keys=node.keychain[channel_partner]
         if self.is_funder:
             signer_index=0
         else:
             signer_index=1
         settled_amounts = [ self.payment_channel.settled_refund_amount, self.payment_channel.settled_payment_amount ]
-
-        # add settled input from htlc sender (after a timeout) or htlc receiver (with preimage)
-        input_index = 0
-        for amount_index in range(len(settled_amounts)) :
-            if settled_amounts[amount_index] > DUST_LIMIT:
-                # add input from signer
-                if amount_index is signer_index:
-                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=0xfffffffe) )
-                input_index += 1
-            
-        if not settled_only:
-            # add htlc inputs, one per htlc
-            for htlc_hash, htlc in self.payment_channel.offered_payments.items():
-                if not self.include_invalid and self.is_funder and htlc.expiry > self.block_time:
-                    continue
-                if not self.include_invalid and not self.is_funder and htlc.preimage_hash not in self.secrets:
-                    continue
-                if htlc.amount > DUST_LIMIT:
-                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=0xfffffffe) )
-                    input_index += 1
 
         self.wit.vtxinwit = []
         #   add the p2wpkh witness scripts to spend the settled channel amounts
@@ -651,6 +644,34 @@ class RedeemTx(CTransaction):
                         script_wsh = CScript([OP_0, witness_hash])
                         input_index += 1
 
+    def AddInputs(self, spend_tx, settled_only):
+        if self.is_funder:
+            signer_index=0
+        else:
+            signer_index=1
+        settled_amounts = [ self.payment_channel.settled_refund_amount, self.payment_channel.settled_payment_amount ]
+
+        # add settled input from htlc sender (after a timeout) or htlc receiver (with preimage)
+        input_index = 1 # skip first change input
+        for amount_index in range(len(settled_amounts)) :
+            if settled_amounts[amount_index] > DUST_LIMIT:
+                # add input from signer
+                if amount_index is signer_index:
+                    assert spend_tx.vout[input_index].nValue == settled_amounts[amount_index]
+                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=0xfffffffe) )
+                input_index += 1
+            
+        if not settled_only:
+            # add htlc inputs, one per htlc
+            for htlc_hash, htlc in self.payment_channel.offered_payments.items():
+                if not self.include_invalid and self.is_funder and htlc.expiry > self.block_time:
+                    continue
+                if not self.include_invalid and not self.is_funder and htlc.preimage_hash not in self.secrets:
+                    continue
+                if htlc.amount > DUST_LIMIT:
+                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=0xfffffffe) )
+                    input_index += 1
+
 class CloseTx(CTransaction):
     __slots__ = ("payment_channel", "setup_tx")
 
@@ -684,8 +705,8 @@ class CloseTx(CTransaction):
         # refund outputs to channel partners immediately
         self.nLockTime = CLTV_START_TIME + self.payment_channel.state+1   
 
-        # add setup_tx vin
-        self.vin = [ CTxIn(outpoint = COutPoint(setup_tx.sha256, 0), scriptSig = b"", nSequence=0xFFFFFFFE) ]
+        # add setup_tx vin, vout[0] of setup_tx is change, vout[1] is the channel balance
+        self.vin = [ CTxIn(outpoint = COutPoint(setup_tx.sha256, 1), scriptSig = b"", nSequence=0xFFFFFFFE) ]
 
         #   build witness program for settled refund output (p2wpkh)
         pubkey = self.payment_channel.witness.GetPaymentPk(node.watch_wallet)
@@ -780,6 +801,12 @@ class L2Node:
             self.node.createwallet(wallet_name=str(self.gid)+"_watch", disable_private_keys=True)
         self.watch_wallet = self.node.get_wallet_rpc(str(self.gid)+"_watch")
 
+        coinbase_wallet = self.node.get_wallet_rpc("coinbase")
+
+        # fund wallet from coinbase (to native p2wpkh)
+        addr = self.wallet.getnewaddress("", "bech32")
+        txid = coinbase_wallet.sendtoaddress(address=addr, amount=10, subtractfeefromamount=False)
+
     def __hash__(self):
         return hash(self.gid)
 
@@ -790,6 +817,36 @@ class L2Node:
         # Not strictly necessary, but to avoid having both x==y and x!=y
         # True at the same time
         return not(self == other)
+
+    def GetFundingTx(self, amount):
+        # find an unspent output with > amount
+        unspent_list = self.wallet.listunspent()
+        unspent = None
+        for unspent in unspent_list:
+            if unspent['amount'] > amount / COIN:
+                break
+        assert unspent != None
+
+        # create source transaction to spent from
+        txid = unspent['txid']
+        tx_hex = self.wallet.gettransaction(txid=txid)['hex']
+        fund_tx = FromHex(CTransaction(), tx_hex)
+        fund_tx.rehash()
+        assert fund_tx != None
+
+        # create private key to spend funding transaction
+        key_wif = self.wallet.dumpprivkey(unspent['address'])
+        key_bytes = b58decode_chk(key_wif)[1:-1] # strip first and last byte
+        fund_key = ECKey()
+        fund_key.set(key_bytes, compressed=True)
+
+        # set index of output to spend
+        outIdx = unspent['vout']
+
+        # TEST 
+        txout = self.wallet.gettxout(txid=txid, n=outIdx)
+
+        return fund_tx, fund_key, outIdx
 
     def IsChannelFunder(self, channel_partner):
         pubkey = self.keychain[channel_partner].GetUpdatePk(self.watch_wallet)
@@ -935,6 +992,7 @@ class L2Node:
         # create an redeem tx that spends a commited settle tx
         is_funder = self.IsChannelFunder(channel_partner)
         redeem_tx = RedeemTx(node=self, payment_channel=settle_tx.payment_channel, secrets=self.secrets, is_funder=is_funder, settled_only=settled_only, include_invalid=include_invalid, block_time=block_time)
+        redeem_tx.AddInputs(spend_tx=settle_tx, settled_only=settled_only)
         redeem_tx.AddWitness(node=self, channel_partner=channel_partner, spend_tx=settle_tx, settled_only=settled_only)
 
         return redeem_tx
@@ -1058,45 +1116,6 @@ class L2Node:
 
 class SimulateL2Tests(BitcoinTestFramework):
 
-    def next_block(self, number, additional_coinbase_value=0, script=CScript([OP_TRUE]), solve=True, *, version=1):
-        if self.tip is None:
-            base_block_hash = self.genesis_hash
-            block_time = int(self.start_time) + 1
-        else:
-            base_block_hash = self.tip.sha256
-            block_time = self.tip.nTime + 1
-        # First create the coinbase
-        height = self.block_heights[base_block_hash] + 1
-        coinbase = create_coinbase(height, self.coinbase_pubkey)
-        coinbase.vout[0].nValue += additional_coinbase_value
-        coinbase.rehash()
-        block = create_block(base_block_hash, coinbase, block_time, version=version)
-        if solve:
-            block.solve()
-        self.tip = block
-        self.block_heights[block.sha256] = height
-        assert number not in self.blocks
-        self.blocks[number] = block
-        return block
-
-    def send_blocks(self, blocks, success=True, reject_reason=None, force_send=False, reconnect=False, timeout=60):
-        """Sends blocks to test node. Syncs and verifies that tip has advanced to most recent block.
-
-        Call with success = False if the tip shouldn't advance to the most recent block."""
-        self.nodes[0].p2p.send_blocks_and_test(blocks, self.nodes[0], success=success, reject_reason=reject_reason, force_send=force_send, timeout=timeout, expect_disconnect=reconnect)
-
-        if reconnect:
-            self.reconnect_p2p(timeout=timeout)
-
-    # save the current tip so it can be spent by a later block
-    def save_spendable_output(self):
-        self.log.debug("saving spendable output %s" % self.tip.vtx[0])
-        self.spendable_outputs.append(self.tip)
-
-    # get an output that we previously marked as spendable
-    def get_spendable_output(self):
-        self.log.debug("getting spendable output %s" % self.spendable_outputs[0].vtx[0])
-        return self.spendable_outputs.pop(0).vtx[0]
 
     def bootstrap_p2p(self, timeout=10):
         """Add a P2P connection to the node.
@@ -1114,79 +1133,82 @@ class SimulateL2Tests(BitcoinTestFramework):
     def init_coinbase(self):
         self.bootstrap_p2p()  # Add one p2p connection to the node
 
-        # TODO: use self.nodes[0].get_deterministic_priv_key and b58decode_chk instead of generating my own blocks!
-
-        self.tip = None
-        self.blocks = {}
-        self.block_heights = {}
-        self.spendable_outputs = []
-
-        self.genesis_hash = int(self.nodes[0].getbestblockhash(), 16)
-        self.block_heights[self.genesis_hash] = 0
-
+        key_wif = self.nodes[0].get_deterministic_priv_key().key
+        key_bytes = b58decode_chk(key_wif)[1:-1] # strip first and last byte
         self.coinbase_key = ECKey()
-        self.coinbase_key.generate()
+        self.coinbase_key.set(key_bytes, compressed=True)
         self.coinbase_pubkey = self.coinbase_key.get_pubkey().get_bytes()
 
         # set initial blocktime to current time
         self.start_time = int(1500000000)# int(time.time())
         self.nodes[0].setmocktime=(self.start_time)
 
-        # generate mature coinbase to spend
-        NUM_BUFFER_BLOCKS_TO_GENERATE = 110
-        for i in range(NUM_BUFFER_BLOCKS_TO_GENERATE):
-            bn = self.next_block(i)
-            self.save_spendable_output()
-            self.send_blocks([bn])
+        # create wallet to track coinbase outputs
+        self.nodes[0].createwallet(wallet_name="coinbase", disable_private_keys=False)
+        coinbase_wallet = self.nodes[0].get_wallet_rpc("coinbase")
+        address = coinbase_wallet.getnewaddress()
 
-        blockheight = self.nodes[0].getblockheader(blockhash=self.nodes[0].getbestblockhash())['height']
+        # collect coinbase outputs to spend in channels
+        blocks = self.nodes[0].generatetoaddress(nblocks=NUM_OUTPUTS_TO_COLLECT, address=address)
+
+        # test that transactions appear in coinbase wallet
+        txid = self.nodes[0].getblock(blocks[0])['tx'][0]
+        tx_hex = coinbase_wallet.gettransaction(txid=txid)['hex']
+        fund_tx = FromHex(CTransaction(), tx_hex)
+        fund_tx.rehash()
+
+        # mature coinbase outputs to spend
+        NUM_BUFFER_BLOCKS_TO_GENERATE = 110
+        self.nodes[0].generate(NUM_BUFFER_BLOCKS_TO_GENERATE)
 
         # collect spendable outputs now to avoid cluttering the code later on
         self.coinbase_utxo = []
-        for i in range(NUM_OUTPUTS_TO_COLLECT):
-            self.coinbase_utxo.append(self.get_spendable_output())
         self.coinbase_index = 0
+        for block in blocks:
+            txid = self.nodes[0].getblock(block)['tx'][0]
+            tx_hex = self.nodes[0].getrawtransaction(txid=txid)
+            fund_tx = FromHex(CTransaction(), tx_hex)
+            fund_tx.rehash()
+            self.coinbase_utxo.append(fund_tx)
 
-        self.nodes[0].generate(33)
+    def fund(self, fee_funder, tx, spend_tx):
+        assert spend_tx != None
+        assert fee_funder.wallet.getbalance() > FEE_AMOUNT / COIN
 
-    def fund(self, fee_funder, tx, spend_tx, amount):
-        assert self.coinbase_index < NUM_OUTPUTS_TO_COLLECT
-        assert amount >= FEE_AMOUNT
+        #   add funding input, change output and channel input from spend_tx
+        tx.AddInputs(fee_funder, spend_tx)
 
-        fund_tx = self.coinbase_utxo[self.coinbase_index]
-        assert fund_tx != None
-        self.coinbase_index+=1
-        fund_key = self.coinbase_key
-        outIdx = 0
+        #   add witness to spend funding inputs
+        signed_fee = fee_funder.wallet.signrawtransactionwithwallet(hexstring=ToHex(tx),sighashtype="SINGLE")
+        signed_fee_tx = FromHex(CTransaction(), signed_fee['hex'])
+        tx.wit.vtxinwit = signed_fee_tx.wit.vtxinwit
 
-        #   update vin and witness to spend a specific update tx (skipped for setup tx)
-        if spend_tx != None:
-            tx.AddWitness(fee_funder, spend_tx)
+        #   add witness to spend a specific update tx
+        tx.AddWitness(fee_funder, spend_tx)
 
-        #   pay change to new p2pkh output, TODO: should use p2wpkh
-        change_key = ECKey()
-        change_key.generate()
-        change_pubkey = change_key.get_pubkey().get_bytes()
-        change_script_pkh = CScript([OP_0, hash160(change_pubkey)])
-        change_amount = fund_tx.vout[0].nValue - amount
+        return tx
 
-        #   add new funding input and change output
-        tx.vin.append(CTxIn(COutPoint(fund_tx.sha256, 0), b""))
-        tx.vout.append(CTxOut(change_amount, change_script_pkh))
+    def fund_setup(self, fee_funder, tx, amount):
+        assert fee_funder.wallet.getbalance() > (amount + FEE_AMOUNT) / COIN
 
-        #   pay fee from spend_tx w/change output (assumed to be last txin)
-        inIdx = len(tx.vin)-1
+        # fund the transaction
+        fee_addr = fee_funder.wallet.getnewaddress("", 'bech32')
+        channel_addr = fee_funder.wallet.getnewaddress("", 'bech32')
+        fee_outputs = {channel_addr:amount/COIN, fee_addr:FEE_AMOUNT/COIN}
+
+        rawtx = fee_funder.wallet.createrawtransaction([], fee_outputs)
+        rawtx = fee_funder.wallet.fundrawtransaction(rawtx, {"changePosition":0})['hex']
+        fee_tx = FromHex(CTransaction(), rawtx)
         
-        #   sign the tx fee input w/change output
-        scriptPubKey = bytearray(fund_tx.vout[outIdx].scriptPubKey)
-        (sighash, err) = SignatureHash(fund_tx.vout[0].scriptPubKey, tx, inIdx, SIGHASH_ALL)
-        sig = fund_key.sign_ecdsa(sighash) + bytes(bytearray([SIGHASH_ALL]))
-        tx.vin[inIdx].scriptSig = CScript([sig])
+        # add funding input and change output, less FEE_AMOUNT
+        tx.vin.insert(0, fee_tx.vin[0])
+        tx.vout.insert(0, fee_tx.vout[0])
+        
+        signed_fee = fee_funder.wallet.signrawtransactionwithwallet(hexstring=ToHex(tx), sighashtype="SINGLE")
+        signed_fee_tx = FromHex(CTransaction(), signed_fee['hex'])
+        tx.wit.vtxinwit = [ signed_fee_tx.wit.vtxinwit[0] ]
 
-        #   update the hash of this transaction
-        tx.rehash()
-
-        return (change_key, change_amount)
+        return tx
 
     def commit(self, tx, error_code=None, error_message=None):
         #   update hash
@@ -1203,12 +1225,17 @@ class SimulateL2Tests(BitcoinTestFramework):
     def set_test_params(self):
         self.num_nodes = 1
         self.setup_clean_chain = True
-        self.extra_args = [[]]
+        self.extra_args = [[
+            '-txindex',
+        ]] * self.num_nodes
 
     def test1(self, payer_sweeps_utxo):
         # topology: node1 opens a channel with node 2
         A = L2Node(gid=1, node=self.nodes[0])
         B = L2Node(gid=2, node=self.nodes[0])
+        
+        # advance blockchain to fund nodes wallets
+        self.nodes[0].generate(1)
 
         # create the set of keys needed to open a new payment channel
         keys, witness = A.ProposeChannel()
@@ -1220,7 +1247,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         setup_tx, refund_tx = A.CreateChannel(channel_partner=B, keys=keys, witness=witness, other_witness=other_witness)
 
         # fund and commit the setup tx to create the new channel
-        self.fund(A, tx=setup_tx, spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund_setup(A, tx=setup_tx, amount=CHANNEL_AMOUNT)
         txid = self.commit(setup_tx)
 
         # mine the setup tx into a new block
@@ -1228,11 +1255,11 @@ class SimulateL2Tests(BitcoinTestFramework):
         self.nodes[0].generate(1)
 
         # A tries to commit the refund tx before the CSV delay has expired
-        self.fund(A, tx=refund_tx, spend_tx=setup_tx, amount=FEE_AMOUNT)
+        self.fund(A, tx=refund_tx, spend_tx=setup_tx)
         txid = self.commit(refund_tx, error_code=-26, error_message="non-BIP68-final")
 
         # B creates first invoice
-        invoice = B.CreateInvoice('test1a', amount=10000, expiry=self.start_time + INVOICE_TIMEOUT)
+        invoice = B.CreateInvoice('test1a', amount=PAYMENT_AMOUNT, expiry=self.start_time + INVOICE_TIMEOUT)
 
         # A creates partially signed transactions to pay the invoice from B
         update1_tx, settle1_tx = A.ProposePayment(B, invoice, setup_tx)
@@ -1244,7 +1271,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         self.nodes[0].generate(1)
 
         # B creates second invoice
-        invoice = B.CreateInvoice('test1b', amount=10000, expiry=self.start_time + INVOICE_TIMEOUT + BLOCK_TIME)
+        invoice = B.CreateInvoice('test1b', amount=PAYMENT_AMOUNT, expiry=self.start_time + INVOICE_TIMEOUT + BLOCK_TIME)
 
         # A creates a new partially signed transactions with higher state to pay the second invoice from B
         update2_tx, settle2_tx = A.ProposePayment(B, invoice, setup_tx)
@@ -1253,19 +1280,22 @@ class SimulateL2Tests(BitcoinTestFramework):
         update2_tx, settle2_tx, secret = B.ReceivePayment(A, update2_tx, settle2_tx)
 
         # fund the transaction fees for the update tx before committing it
-        self.fund(A, tx=update2_tx, spend_tx=setup_tx, amount=FEE_AMOUNT)
+        self.fund(A, tx=update2_tx, spend_tx=setup_tx)
 
         # B commits the update tx to start the uncooperative close of the channel
         txid = self.commit(update2_tx)
 
+        # mine the update tx into a new block so change available to fund settle tx
+        self.nodes[0].generate(1)
+
         # fund the transaction fees for the settle tx before committing it
-        self.fund(A, tx=settle2_tx, spend_tx=update2_tx, amount=FEE_AMOUNT)
+        self.fund(A, tx=settle2_tx, spend_tx=update2_tx)
 
         # B tries to commits the settle tx before the CSV timeout
         txid = self.commit(settle2_tx, error_code=-26, error_message="non-BIP68-final")
 
         # A tries to commit an update tx that spends the commited update to an earlier state (encoded by nLocktime)
-        self.fund(A, tx=update1_tx, spend_tx=update2_tx, amount=FEE_AMOUNT)
+        self.fund(A, tx=update1_tx, spend_tx=update2_tx)
         txid = self.commit(update1_tx, error_code=-26, error_message="non-mandatory-script-verify-flag") # Locktime requirement not satisfied
 
         # mine the update tx into a new block, and advance blocks until settle tx can be spent
@@ -1333,7 +1363,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         setup_tx[A], refund_tx[A] = A.CreateChannel(channel_partner=B, keys=keys[A], witness=witness[A], other_witness=other_witness[B])
 
         # fund and commit the setup tx to create the new channel
-        self.fund(A, tx=setup_tx[A], spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund_setup(A, tx=setup_tx[A], amount=CHANNEL_AMOUNT)
         txid = self.commit(setup_tx[A])
 
         '-------------------------'
@@ -1348,7 +1378,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         setup_tx[B], refund_tx[B] = B.CreateChannel(channel_partner=C, keys=keys[B], witness=witness[B], other_witness=other_witness[C])
 
         # fund and commit the setup tx to create the new channel
-        self.fund(A, tx=setup_tx[B], spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund_setup(B, tx=setup_tx[B], amount=CHANNEL_AMOUNT)
         txid = self.commit(setup_tx[B])
 
         # mine the setup tx into a new block
@@ -1386,7 +1416,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         assert secret[C] != None
 
         # fund the transaction fees for the update tx before committing it
-        self.fund(A, tx=update_tx[B], spend_tx=setup_tx[A], amount=FEE_AMOUNT)
+        self.fund(B, tx=update_tx[B], spend_tx=setup_tx[A])
 
         # B commits the update tx to start the uncooperative close of the channel
         txid = self.commit(update_tx[B])
@@ -1398,7 +1428,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         '-------------------------'
 
         # fund the transaction fees for the settle tx before committing it
-        self.fund(A, tx=settle_tx[B], spend_tx=update_tx[B], amount=FEE_AMOUNT)
+        self.fund(B, tx=settle_tx[B], spend_tx=update_tx[B])
 
         # B commits the settle tx to finalize the uncooperative close of the channel 
         txid = self.commit(settle_tx[B])
@@ -1434,7 +1464,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         # do an uncooperative close using secrets to settle htlcs directly on the blockchain with last signed payment from B
 
         # fund the transaction fees for the update tx before committing it
-        self.fund(fee_funder, tx=update_tx, spend_tx=spend_tx, amount=FEE_AMOUNT)
+        self.fund(fee_funder, tx=update_tx, spend_tx=spend_tx)
 
         # either side commits a signed update tx to start the uncooperative close of the channel
         txid = self.commit(update_tx)
@@ -1445,7 +1475,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         '-------------------------'
 
         # fund the transaction fees for the settle tx before committing it
-        self.fund(fee_funder, tx=settle_tx, spend_tx=update_tx, amount=FEE_AMOUNT)
+        self.fund(fee_funder, tx=settle_tx, spend_tx=update_tx)
 
         # either side commits a signed settle tx to finalize the uncooperative close of the channel 
         txid = self.commit(settle_tx)
@@ -1492,7 +1522,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         setup_tx[A], refund_tx[A] = A.CreateChannel(channel_partner=B, keys=keys[A], witness=witness[A], other_witness=other_witness[B])
 
         # fund and commit the setup tx to create the new channel
-        self.fund(A, tx=setup_tx[A], spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund_setup(A, tx=setup_tx[A], amount=CHANNEL_AMOUNT)
         txid = self.commit(setup_tx[A])
         '-------------------------'
 
@@ -1506,7 +1536,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         setup_tx[B], refund_tx[B] = B.CreateChannel(channel_partner=C, keys=keys[B], witness=witness[B], other_witness=other_witness[C])
 
         # fund and commit the setup tx to create the new channel
-        self.fund(A, tx=setup_tx[B], spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund_setup(A, tx=setup_tx[B], amount=CHANNEL_AMOUNT)
         txid = self.commit(setup_tx[B])
 
         # mine the setup tx into a new block
@@ -1592,110 +1622,6 @@ class SimulateL2Tests(BitcoinTestFramework):
         txid = self.commit(close_tx)
 
     def run_test(self):
-
-        '''
-        # test addresses from bip32.org 
-        # - testnet: crazy horse battery staple
-        # - Derivation Path: info:m (master)
-
-        key = ECKey()
-        key.generate()
-        tprv, tpub = bip32_generate_hdaddresses(key, network="testnet")
-
-        self.nodes[0].createwallet(wallet_name="mine", disable_private_keys=False)
-        mine_wallet = self.nodes[0].get_wallet_rpc("mine") 
-
-        self.nodes[0].createwallet(wallet_name="theirs", disable_private_keys=True)
-        theirs_wallet = self.nodes[0].get_wallet_rpc("theirs")
-
-        refund_pubkey  = bytes.fromhex(bip32_pubkey(mine_wallet, tprv, 0))
-        payment_pubkey = bytes.fromhex(bip32_pubkey(theirs_wallet, tpub, 1))
-        secret = random.randrange(0, RANDOM_RANGE).to_bytes(32, 'big')
-        preimage_hash = hash160(secret)
-        expiry = int(time.time()) + INVOICE_TIMEOUT
-        state = 0
-
-        witness_program = get_eltoo_htlc_script(refund_pubkey, payment_pubkey, preimage_hash, expiry)
-        witness_hash = sha256(witness_program)
-        update_script_wsh = CScript([OP_0, witness_hash])
-        prevscript = CScript()
-        #self.log.debug("add_settle_outputs: state=%s, signer_index=%d\n\twitness sha256(%s)=%s\n\twsh sha256(%s)=%s\n", state, signer_index, ToHex(witness_program),
-        #    ToHex(witness_hash), ToHex(script_wsh), ToHex(sha256(script_wsh)))
-
-        addr = mine_wallet.getnewaddress()
-        block_hash = self.nodes[0].generatetoaddress(1, addr)[0]
-        block = self.nodes[0].getblock(block_hash)
-        txid = block['tx'][0]
-        hex_tx = mine_wallet.gettransaction(txid)['hex']
-        coinbase_tx = FromHex(CTransaction(), hex_tx)
-        coinbase_tx.rehash()
-        self.nodes[0].generate(100)
-        amount = coinbase_tx.vout[0].nValue - FEE_AMOUNT
-
-        #   fund tx -> update tx
-        fund_tx = CTransaction()
-        fund_tx.nVersion = 2
-        fund_tx.nLockTime = CLTV_START_TIME + state
-        fund_tx.vout = [ CTxOut(amount, update_script_wsh) ]
-        fund_tx.vin = [ CTxIn(outpoint = COutPoint(coinbase_tx.sha256, 0), 
-            scriptSig = b"", nSequence=0xFFFFFFFE) ]
-
-        fund_tx_hash = SegwitVersion1SignatureHash(prevscript, fund_tx, 0, 
-            SIGHASH_ALL, amount)
-        # signature = keys.update_key.sign_ecdsa(tx_hash) + chr(SIGHASH_ALL).encode('latin-1')
-
-        # sign and submit fund tx to transfer from coinbase tx output -> update tx output
-        fund_tx.rehash()
-        fund_tx_hex = ToHex(fund_tx)
-
-        result = mine_wallet.signrawtransactionwithwallet(fund_tx_hex)
-        txid_fund = self.nodes[0].sendrawtransaction(result['hex'])
-
-        # sign and submit transaction from update tx -> p2pkh
-        settle_pubkey = bytes.fromhex(bip32_pubkey(mine_wallet, tprv, 2))
-        witness_program = get_p2pkh_script(settle_pubkey)
-        witness_hash = sha256(witness_program)
-        script_wsh = CScript([OP_0, witness_hash])
-        
-        # update state and amount
-        state = state + 1
-        amount = amount - FEE_AMOUNT
-
-        #   settle tx
-        update_tx = CTransaction()
-        update_tx.nVersion = 2
-        update_tx.nLockTime = CLTV_START_TIME + state
-        update_tx.vout = [ CTxOut(amount, script_wsh) ]
-        update_tx.vin = [ CTxIn(outpoint = COutPoint(fund_tx.sha256, 0), 
-            scriptSig = b"", nSequence=0xFFFFFFFE) ]
-
-        update_tx_hash = SegwitVersion1SignatureHash(prevscript, update_tx, 0, 
-            SIGHASH_ANYPREVOUT | SIGHASH_SINGLE, amount)
-        
-        sig1 = bip32_sign(update_tx_hash, mine_wallet, tprv, 0)
-        v = bip32_verify(sig1, update_tx_hash, mine_wallet, tprv, 0)
-
-        sig2 = bip32_sign(update_tx_hash, mine_wallet, tprv, 1)
-        v = bip32_verify(sig2, update_tx_hash, mine_wallet, tprv, 1)
-
-        # sign and submit transaction from coinbase tx -> update tx
-        # witness script to spend update tx to update tx
-        update_tx.wit.vtxinwit = [ CTxInWitness() ]
-        witness = Witness()
-        witness.update_pk = bytes.fromhex(bip32_pubkey(mine_wallet, tprv, 0))
-        witness.settle_pk = bytes.fromhex(bip32_pubkey(mine_wallet, tprv, 0))
-        other_witness = Witness()
-        other_witness.update_pk = bytes.fromhex(bip32_pubkey(mine_wallet, tprv, 0))
-        other_witness.settle_pk = bytes.fromhex(bip32_pubkey(mine_wallet, tprv, 0))
-
-        witness_program = get_eltoo_update_script(state, witness, other_witness)
-        update_tx.wit.vtxinwit[0].scriptWitness = CScriptWitness()
-        update_tx.wit.vtxinwit[0].scriptWitness.stack = [b'', sig1, sig2, witness_program]
-        assert(len(self.vin) == 0)
-        self.vin = [ CTxIn(outpoint = COutPoint(update_tx.sha256, 0), scriptSig = b"", nSequence=0xFFFFFFFE) ]
-
-        update_txid = self.nodes[0].sendrawtransaction()
-        '''
 
         # create some coinbase txs to spend
         self.init_coinbase()
