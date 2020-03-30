@@ -1114,6 +1114,27 @@ class L2Node:
 
         return None
 
+    def CheckBalance(self, txid, n, balance):
+        # confirm transaction confirmed in blockchain
+        # note: setup.vout[0] is change, vout[1] is channel balance
+        txout = self.node.gettxout(txid=txid, n=n, include_mempool=False)
+        if balance > 0:
+            assert_equal(txout['value']*COIN, balance)
+        else:
+            assert_equal(txout, None)
+
+    def Commit(self, tx, error_code=None, error_message=None):
+        #   update hash
+        tx.rehash()
+
+        #   confirm it is in the mempool
+        tx_hex = ToHex(tx)
+        if error_code is None or error_message is None:
+            txid = self.node.sendrawtransaction(tx_hex)
+        else:
+            txid = assert_raises_rpc_error(error_code, error_message, self.node.sendrawtransaction, tx_hex)
+        return txid
+
 class SimulateL2Tests(BitcoinTestFramework):
 
     def init_coinbase(self):
@@ -1132,20 +1153,9 @@ class SimulateL2Tests(BitcoinTestFramework):
         # mature coinbase outputs to spend
         NUM_BUFFER_BLOCKS_TO_GENERATE = 110
         self.nodes[0].generate(NUM_BUFFER_BLOCKS_TO_GENERATE)
-
-    def commit(self, tx, error_code=None, error_message=None):
-        #   update hash
-        tx.rehash()
-
-        #   confirm it is in the mempool
-        tx_hex = ToHex(tx)
-        if error_code is None or error_message is None:
-            txid = self.nodes[0].sendrawtransaction(tx_hex)
-        else:
-            txid = assert_raises_rpc_error(error_code, error_message, self.nodes[0].sendrawtransaction, tx_hex)
-        return txid
             
     def set_test_params(self):
+        self.setup_clean_chain = True
         self.num_nodes = 4
         self.extra_args = [[]] * self.num_nodes
 
@@ -1168,15 +1178,26 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # fund and commit the setup tx to create the new channel
         A.FundSetup(tx=setup_tx, amount=CHANNEL_AMOUNT)
-        txid = self.commit(setup_tx)
+        setup_txid = A.Commit(setup_tx)
+
+        # confirm setup has not yet been funded
+        A.CheckBalance(txid=setup_txid, n=1, balance=0)
+        B.CheckBalance(txid=setup_txid, n=1, balance=0)
+
+        # sync all nodes see the new setup transaction commited by A
+        self.sync_all()
 
         # mine the setup tx into a new block
         self.nodes[0].setmocktime=(self.start_time)
         self.nodes[0].generate(1)
 
+        # confirm balance has been funded
+        A.CheckBalance(txid=setup_txid, n=1, balance=CHANNEL_AMOUNT)
+        B.CheckBalance(txid=setup_txid, n=1, balance=CHANNEL_AMOUNT)
+
         # A tries to commit the refund tx before the CSV delay has expired
         A.Fund(tx=refund_tx, spend_tx=setup_tx)
-        txid = self.commit(refund_tx, error_code=-26, error_message="non-BIP68-final")
+        refund_txid = A.Commit(refund_tx, error_code=-26, error_message="non-BIP68-final")
 
         # B creates first invoice
         invoice = B.CreateInvoice('test1a', amount=PAYMENT_AMOUNT, expiry=self.start_time + INVOICE_TIMEOUT)
@@ -1186,9 +1207,6 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # B receives payment from A and returns corresponding secret and fully signed transactions
         update1_tx, settle1_tx, secret = B.ReceivePayment(A, update1_tx, settle1_tx)
-
-        # mine the setup tx into a new block, increment time by 10 minutes
-        self.nodes[0].generate(1)
 
         # B creates second invoice
         invoice = B.CreateInvoice('test1b', amount=PAYMENT_AMOUNT, expiry=self.start_time + INVOICE_TIMEOUT + BLOCK_TIME)
@@ -1203,60 +1221,91 @@ class SimulateL2Tests(BitcoinTestFramework):
         A.Fund(tx=update2_tx, spend_tx=setup_tx)
 
         # B commits the update tx to start the uncooperative close of the channel
-        txid = self.commit(update2_tx)
+        update2_txid = A.Commit(update2_tx)
+
+        # confirm balance exists in setup_tx still
+        A.CheckBalance(txid=setup_txid, n=1, balance=CHANNEL_AMOUNT)
+        B.CheckBalance(txid=setup_txid, n=1, balance=CHANNEL_AMOUNT)
+
+        # sync so all nodes see the new update2 transaction commited by A
+        self.sync_all()
 
         # mine the update tx into a new block so change available to fund settle tx
         self.nodes[0].generate(1)
+
+        # confirm that the setup_tx output balance is now an output of update2_tx
+        A.CheckBalance(txid=setup_txid, n=1, balance=0)
+        A.CheckBalance(txid=update2_txid, n=1, balance=CHANNEL_AMOUNT)
+        B.CheckBalance(txid=setup_txid, n=1, balance=0)
+        B.CheckBalance(txid=update2_txid, n=1, balance=CHANNEL_AMOUNT)
 
         # fund the transaction fees for the settle tx before committing it
         A.Fund(tx=settle2_tx, spend_tx=update2_tx)
 
         # B tries to commits the settle tx before the CSV timeout
-        txid = self.commit(settle2_tx, error_code=-26, error_message="non-BIP68-final")
+        txid = A.Commit(settle2_tx, error_code=-26, error_message="non-BIP68-final")
 
         # A tries to commit an update tx that spends the commited update to an earlier state (encoded by nLocktime)
         A.Fund(tx=update1_tx, spend_tx=update2_tx)
-        txid = self.commit(update1_tx, error_code=-26, error_message="non-mandatory-script-verify-flag") # Locktime requirement not satisfied
+        txid = A.Commit(update1_tx, error_code=-26, error_message="non-mandatory-script-verify-flag") # Locktime requirement not satisfied
 
-        # mine the update tx into a new block, and advance blocks until settle tx can be spent
+        # mine the update1 tx into a new block, and advance blocks until settle tx can be spent
+        self.sync_all()
         self.nodes[0].generate(CSV_DELAY+1)
 
         # A or B commits the settle tx to finalize the uncooperative close of the channel after the CSV timeout
-        txid = self.commit(settle2_tx)
+        txid = B.Commit(settle2_tx)
 
         if payer_sweeps_utxo:
             # A collects the settled amount and tries to sweep even invalid/unexpired htlcs
             redeem_tx = A.UncooperativelyClose(B, settle2_tx, include_invalid=True, block_time=self.start_time + INVOICE_TIMEOUT)
 
             # wait for invoice to expire
+            self.sync_all()
             self.nodes[0].setmocktime=(self.start_time + INVOICE_TIMEOUT)
             self.nodes[0].generate(1)
 
             # A attempts to commits the redeem tx to complete the uncooperative close of the channel before the invoice has timed out
-            txid = self.commit(redeem_tx, error_code=-26, error_message="non-mandatory-script-verify-flag") #  (Locktime requirement not satisfied)
+            txid = A.Commit(redeem_tx, error_code=-26, error_message="non-mandatory-script-verify-flag") #  (Locktime requirement not satisfied)
 
             # advance locktime on redeem tx to past expiry of the invoices
             redeem_tx = A.UncooperativelyClose(B, settle2_tx, include_invalid=False, block_time=self.start_time + INVOICE_TIMEOUT + BLOCK_TIME)
 
-            # wait for invoice to expire
+            # sync and mine the settle2_tx, and then wait for invoice to expire
+            self.sync_all()
             self.nodes[0].setmocktime=(self.start_time + INVOICE_TIMEOUT + BLOCK_TIME+1)
-            self.nodes[0].generate(10)
+            self.nodes[0].generate(1)
 
             # A commits the redeem tx to complete the uncooperative close of the channel and sweep the htlc
-            txid = self.commit(redeem_tx)
+            txid = A.Commit(redeem_tx)
+
+            # mine the redeem tx into a new block
+            self.sync_all()
+            self.nodes[0].generate(1)
+
+            # TODO: check settled balances after the redeem transaction has been commited
             
         else:
             # B collects the settled amount and uses the secret to sweep an unsettled htlc
             redeem_tx = B.UncooperativelyClose(A, settle2_tx)
 
             # B commits the redeem tx to complete the uncooperative close of the channel
-            txid = self.commit(redeem_tx)
+            txid = B.Commit(redeem_tx)
 
-            # A collects the settled amount, and has no unsettled htlcs to collect
+            # sync the settle2_tx from node B, and immediately collect confirmed balance
+            self.sync_all()
+
+            # A collects the settled amount, and A has no unsettled htlcs to collect
             redeem_tx = A.UncooperativelyClose(B, settle2_tx, settled_only=True)
 
             # A commits the redeem tx to complete the uncooperative close of the channel
-            txid = self.commit(redeem_tx)
+            txid = A.Commit(redeem_tx)
+
+            # mine the redeem tx into a new block
+            self.sync_all()
+            self.nodes[0].generate(1)
+
+            # TODO: check settled balances after the redeem transaction has been commited
 
     def test2(self):
 
@@ -1284,7 +1333,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # fund and commit the setup tx to create the new channel
         A.FundSetup(tx=setup_tx[A], amount=CHANNEL_AMOUNT)
-        txid = self.commit(setup_tx[A])
+        txid = A.Commit(setup_tx[A])
 
         '-------------------------'
 
@@ -1299,9 +1348,10 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # fund and commit the setup tx to create the new channel
         B.FundSetup(tx=setup_tx[B], amount=CHANNEL_AMOUNT)
-        txid = self.commit(setup_tx[B])
+        txid = B.Commit(setup_tx[B])
 
         # mine the setup tx into a new block
+        self.sync_all()
         self.nodes[0].generate(1)
         '-------------------------'
 
@@ -1339,11 +1389,12 @@ class SimulateL2Tests(BitcoinTestFramework):
         B.Fund(tx=update_tx[B], spend_tx=setup_tx[A])
 
         # B commits the update tx to start the uncooperative close of the channel
-        txid = self.commit(update_tx[B])
+        txid = B.Commit(update_tx[B])
 
         # fund the transaction fees for the update tx before committing it 
 
         # mine the update tx into a new block, and advance blocks until settle tx can be spent
+        self.sync_all()
         self.nodes[0].generate(CSV_DELAY+10)
         '-------------------------'
 
@@ -1351,7 +1402,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         B.Fund(tx=settle_tx[B], spend_tx=update_tx[B])
 
         # B commits the settle tx to finalize the uncooperative close of the channel 
-        txid = self.commit(settle_tx[B])
+        txid = B.Commit(settle_tx[B])
         '-------------------------'
 
         # B associates the wrong preimage secret with the preimage hash
@@ -1361,7 +1412,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         redeem_tx[B] = B.UncooperativelyClose(A, settle_tx[B], settled_only=False, include_invalid=True, block_time=self.start_time + INVOICE_TIMEOUT)
 
         # B commits the redeem tx to complete the uncooperative close of the channel and collect settled and confirmed utxos (less transaction fees)
-        txid = self.commit(redeem_tx[B], error_code=-26, error_message="non-mandatory-script-verify-flag")
+        txid = B.Commit(redeem_tx[B], error_code=-26, error_message="non-mandatory-script-verify-flag")
 
         # B learns the secret from C
         assert hash160(secret[C]) == invoice[B].preimage_hash
@@ -1372,13 +1423,22 @@ class SimulateL2Tests(BitcoinTestFramework):
         redeem_tx[B] = B.UncooperativelyClose(A, settle_tx[B])
 
         # B commits the redeem tx to complete the uncooperative close of the channel and collect settled and confirmed utxos (less transaction fees)
-        txid = self.commit(redeem_tx[B])
+        txid = B.Commit(redeem_tx[B])
 
         # A collects the settled amount, and has no unsettled htlcs to collect
         redeem_tx[A] = A.UncooperativelyClose(B, settle_tx[B], settled_only=True, include_invalid=True, block_time=self.start_time + INVOICE_TIMEOUT)
 
+        # sync the settle_tx commited by node B to node A
+        self.sync_all()
+
         # A commits the redeem tx to complete the uncooperative close of the channel
-        txid = self.commit(redeem_tx[A])
+        txid = A.Commit(redeem_tx[A])
+
+        # mine the redeem tx into a new block
+        self.sync_all()
+        self.nodes[0].generate(1)
+
+        # TODO: check balances after the redeem transaction has been commited in a block
 
     def uncooperative_close(self, fee_funder, payment_sender, payment_receiver, spend_tx, update_tx, settle_tx, block_time):
         # do an uncooperative close using secrets to settle htlcs directly on the blockchain with last signed payment from B
@@ -1387,9 +1447,10 @@ class SimulateL2Tests(BitcoinTestFramework):
         fee_funder.Fund(tx=update_tx, spend_tx=spend_tx)
 
         # either side commits a signed update tx to start the uncooperative close of the channel
-        txid = self.commit(update_tx)
+        txid = fee_funder.Commit(update_tx)
 
         # mine the update tx into a new block, and advance blocks until settle tx can be spent
+        self.sync_all()
         self.nodes[0].setmocktime=(block_time)
         self.nodes[0].generate(CSV_DELAY+10)
         '-------------------------'
@@ -1398,21 +1459,21 @@ class SimulateL2Tests(BitcoinTestFramework):
         fee_funder.Fund(tx=settle_tx, spend_tx=update_tx)
 
         # either side commits a signed settle tx to finalize the uncooperative close of the channel 
-        txid = self.commit(settle_tx)
+        txid = fee_funder.Commit(settle_tx)
         '-------------------------'
 
         # payment receiver collects their settled payments and uses their secrets to sweep any unsettled htlcs
         redeem_tx = payment_receiver.UncooperativelyClose(payment_sender, settle_tx)
 
         # payment receiver commits the redeem tx to complete the uncooperative close of the channel and collect settled and confirmed utxos (less transaction fees)
-        txid = self.commit(redeem_tx)
+        txid = payment_receiver.Commit(redeem_tx)
 
         # payment sender collects the settled refund amount, and any unsettled htlcs that have expired
         redeem_tx = payment_sender.UncooperativelyClose(payment_receiver, settle_tx, settled_only=False, include_invalid=False, block_time=block_time + INVOICE_TIMEOUT)
 
         # A commits the redeem tx to complete the uncooperative close of the channel
         self.nodes[0].setmocktime=(block_time + INVOICE_TIMEOUT)
-        txid = self.commit(redeem_tx)
+        txid = payment_receiver.Commit(redeem_tx)
 
         return block_time
 
@@ -1443,7 +1504,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # fund and commit the setup tx to create the new channel
         A.FundSetup(tx=setup_tx[A], amount=CHANNEL_AMOUNT)
-        txid = self.commit(setup_tx[A])
+        txid = A.Commit(setup_tx[A])
         '-------------------------'
 
         # create the set of keys needed to open a new payment channel
@@ -1457,9 +1518,10 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # fund and commit the setup tx to create the new channel
         B.FundSetup(tx=setup_tx[B], amount=CHANNEL_AMOUNT)
-        txid = self.commit(setup_tx[B])
+        txid = B.Commit(setup_tx[B])
 
         # mine the setup tx into a new block
+        self.sync_all()
         self.nodes[0].generate(1)
         '-------------------------'
 
@@ -1467,7 +1529,7 @@ class SimulateL2Tests(BitcoinTestFramework):
             invoice = {}
 
             # A offers to pay B the amount C requested in exchange for the secret that proves C has been paid
-            invoice[A] = C.CreateInvoice('test2', amount=5000, expiry= block_time + INVOICE_TIMEOUT)
+            invoice[A] = C.CreateInvoice('test3', amount=5000, expiry= block_time + INVOICE_TIMEOUT)
 
             # B offers to pay C the amount A offers (less relay fee) in exchange for the secret that proves that C has been paid
             invoice[B] = invoice[A]
@@ -1533,13 +1595,16 @@ class SimulateL2Tests(BitcoinTestFramework):
         close_tx = B.AcceptClose(A, close_tx, setup_tx[A])
 
         # if B does not sign and submit close_tx, then A should do an uncooperative close
-        txid = self.commit(close_tx)
+        txid = B.Commit(close_tx)
+
+        # sync so all nodes see the close transaction commited by B
+        self.sync_all()
 
         close_tx = B.ProposeClose(C, setup_tx[B])
         close_tx = C.AcceptClose(B, close_tx, setup_tx[B])
 
         # if C does not sign and submit close_tx, then B should do an uncooperative close
-        txid = self.commit(close_tx)
+        txid = C.Commit(close_tx)
 
     def run_test(self):
 
