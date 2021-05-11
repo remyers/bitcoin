@@ -84,7 +84,7 @@ from test_framework.script import (
     SIGHASH_ANYONECANPAY,
     SIGHASH_ANYPREVOUT,
     SIGHASH_ANYPREVOUTANYSCRIPT,
-    
+    LegacySignatureHash,
     TaprootSignatureHash
 )
 from test_framework.test_framework import BitcoinTestFramework
@@ -106,6 +106,7 @@ CLTV_START_TIME = 500000000
 INVOICE_TIMEOUT = 3600 # 60 minute
 BLOCK_TIME = 600 # 10 minutes
 MIN_FEE = 50000
+DEFAULT_NSEQUENCE = 0xFFFFFFFE  # disable nSequence lock
 
 # from bitcoinops script.py
 def GetVersionTaggedPubKey(pubkey, version):
@@ -118,7 +119,7 @@ def GetVersionTaggedPubKey(pubkey, version):
     return bytes([data[0] & 1 | version]) + data[1:]
 
 # from bitcoinops util.py
-def create_spending_transaction(node, txid, version=1, nSequence=0):
+def create_spending_transaction(node, txid, version=1, nSequence=0, nLockTime=0):
     """Construct a CTransaction object that spends the first ouput from txid."""
     # Construct transaction
     spending_tx = CTransaction()
@@ -127,14 +128,12 @@ def create_spending_transaction(node, txid, version=1, nSequence=0):
     spending_tx.nVersion = version
 
     # Populate the locktime
-    spending_tx.nLockTime = 0
+    spending_tx.nLockTime = nLockTime
 
     # Populate the transaction inputs
     outpoint = COutPoint(int(txid, 16), 0)
     spending_tx_in = CTxIn(outpoint=outpoint, nSequence=nSequence)
     spending_tx.vin = [spending_tx_in]
-
-    # Generate new Bitcoin Core wallet address
     dest_addr = node.getnewaddress(address_type="bech32")
     scriptpubkey = bytes.fromhex(node.getaddressinfo(dest_addr)['scriptPubKey'])
 
@@ -146,8 +145,8 @@ def create_spending_transaction(node, txid, version=1, nSequence=0):
     return spending_tx
 
 # from bitcoinops util.py
-def generate_and_send_coins(node, address):
-    """Generate blocks on node and then send 1 BTC to address.
+def generate_and_send_coins(node, address, amount_sat):
+    """Generate blocks on node and then send amount_sat to address.
     No change output is added to the transaction.
     Return a CTransaction object."""
     version = node.getnetworkinfo()['subversion']
@@ -167,7 +166,7 @@ def generate_and_send_coins(node, address):
     # Create a raw transaction sending 1 BTC to the address, then sign and send it.
     # We won't create a change output, so maxfeerate must be set to 0
     # to allow any fee rate.
-    tx_hex = node.createrawtransaction(inputs=inputs, outputs=[{address: 1}])
+    tx_hex = node.createrawtransaction(inputs=inputs, outputs=[{address: amount_sat / 100_000_000}])
 
     res = node.signrawtransactionwithwallet(hexstring=tx_hex)
 
@@ -225,6 +224,177 @@ def dump_json_test(tx, input_utxos, idx, success, failure):
 
 def int_to_bytes(x) -> bytes:
     return x.to_bytes((x.bit_length() + 7) // 8, 'big')
+
+def get_state_address(inner_pubkey, state):
+    update_script = get_update_tapscript(state)
+    settle_script = get_settle_tapscript()
+    taptree = taproot_construct(inner_pubkey, [
+        ("update", update_script), ("settle", settle_script)
+    ])
+    tweaked,_ = tweak_add_pubkey(taptree.inner_pubkey, taptree.tweak)
+    address = program_to_witness(version=0x01, program=tweaked, main=False)
+    return address
+
+def get_htlc_address(inner_pubkey, preimage_hash, claim_pubkey, expiry, refund_pubkey):
+    htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
+    htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
+    taptree = taproot_construct(inner_pubkey, [
+        ("htlc_claim", htlc_claim_script), ("htlc_refund", htlc_refund_script)
+    ])
+    tweaked,_ = tweak_add_pubkey(taptree.inner_pubkey, taptree.tweak)
+    address = program_to_witness(version=0x01, program=tweaked, main=False)
+    return address
+
+def create_update_transaction(node, source_tx, dest_addr, state, amount_sat):
+    # UPDATE TX
+    # nlocktime: CLTV_START_TIME + state
+    # nsequence: 0
+    # sighash=SINGLE | ANYPREVOUTANYSCRIPT
+    update_tx = CTransaction()
+    update_tx.nVersion = 2
+    update_tx.nLockTime = CLTV_START_TIME+state
+
+    # Populate the transaction inputs
+    source_tx.rehash()
+    outpoint = COutPoint(int(source_tx.hash, 16), 0)
+    update_tx.vin = [CTxIn(outpoint=outpoint, nSequence=0)]
+
+    scriptpubkey = bytes.fromhex(node.getaddressinfo(dest_addr)['scriptPubKey'])
+    dest_output = CTxOut(nValue=amount_sat, scriptPubKey=scriptpubkey)
+    update_tx.vout = [dest_output]  
+
+    return update_tx
+
+def create_settle_transaction(node, source_tx, outputs):
+    # SETTLE TX
+    # nlocktime: CLTV_START_TIME + state + 1
+    # nsequence: CSV_DELAY
+    # sighash=SINGLE | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the update leaf is commited to in the root hash used as the scriptPubKey)
+    # output 0: A
+    # output 1: B
+    # output 2..n: <HTLCs>
+    settle_tx = CTransaction()
+    settle_tx.nVersion = 2
+    settle_tx.nLockTime = source_tx.nLockTime+1
+
+    # Populate the transaction inputs
+    source_tx.rehash()
+    outpoint = COutPoint(int(source_tx.hash, 16), 0)
+    settle_tx.vin = [CTxIn(outpoint=outpoint, nSequence=CSV_DELAY)]
+
+    # Complete output which emits 0.1 BTC to each party and 0.1 to two HTLCs
+    for dest_addr, amount_sat in outputs:
+        # dest_addr = node.getnewaddress(address_type="bech32")
+        scriptpubkey = bytes.fromhex(node.getaddressinfo(dest_addr)['scriptPubKey'])
+        dest_output = CTxOut(nValue=amount_sat, scriptPubKey=scriptpubkey)
+        settle_tx.vout.append(dest_output)  
+
+    return settle_tx
+
+def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT):
+    # Generate taptree for update tx at state 'spend_state'
+    pubkey,_ = compute_xonly_pubkey(privkey)
+    update_script = get_update_tapscript(spent_state)
+    settle_script = get_settle_tapscript()
+    eltoo_taptree = taproot_construct(pubkey, [
+        ("update", update_script), ("settle", settle_script)
+    ])
+
+    # Generate a Taproot signature hash to spend `nValue` from any previous output with any script (ignore prevout's scriptPubKey)
+    sighash = TaprootSignatureHash(tx,
+                                [funding_tx.vout[0]],
+                                SIGHASH_SINGLE | sighash_flag,
+                                input_index=0,
+                                scriptpath=True,
+                                script=CScript(),
+                                key_ver=KEY_VERSION_ANYPREVOUT) 
+
+    # Sign with internal private key
+    signature =  sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+
+    # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
+    update_leaf = eltoo_taptree.leaves["update"]
+    update_control_block = bytes([update_leaf.version + eltoo_taptree.negflag]) + eltoo_taptree.inner_pubkey + update_leaf.merklebranch
+
+    # Add witness to transaction
+    inputs = [signature]
+    witness_elements = [update_script, update_control_block]
+    tx.wit.vtxinwit.append(CTxInWitness())
+    tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
+
+def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUT):
+    # Generate taptree for update tx at state n
+    pubkey,_ = compute_xonly_pubkey(privkey)
+    update_script = get_update_tapscript(spent_state)
+    settle_script = get_settle_tapscript()
+    eltoo_taptree = taproot_construct(pubkey, [
+        ("update", update_script), ("settle", settle_script)
+    ])
+    
+    # Generate the Taproot Signature Hash for signing
+    sighash = TaprootSignatureHash(tx,
+                                [update_tx.vout[0]],
+                                SIGHASH_SINGLE | sighash_flag,
+                                input_index=0,
+                                scriptpath=True,
+                                script=settle_script,
+                                key_ver=KEY_VERSION_ANYPREVOUT) 
+
+    # Sign with internal private key
+    signature =  sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+
+    # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
+    settle_leaf = eltoo_taptree.leaves["settle"]
+    settle_control_block = bytes([settle_leaf.version + eltoo_taptree.negflag]) + eltoo_taptree.inner_pubkey + settle_leaf.merklebranch
+
+    # Add witness to transaction
+    inputs = [signature]
+    witness_elements = [settle_script, settle_control_block]
+    tx.wit.vtxinwit.append(CTxInWitness())
+    tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
+
+# eltoo taproot scripts
+# see https://lists.linuxfoundation.org/pipermail/lightning-dev/2019-May/001996.html
+
+def get_update_tapscript(state):
+    # eltoo Update output
+    return CScript([
+        CScriptNum(CLTV_START_TIME+state),  # check state before signature
+        OP_CHECKLOCKTIMEVERIFY,             # does nothing if nLockTime of tx is a later state
+        OP_DROP,                            # remove state value from stack
+        OP_1,                               # single byte 0x1 means the BIP-118 public key == taproot internal key
+        OP_CHECKSIG
+    ])
+
+def get_settle_tapscript():
+    # eltoo Settle output
+    return CScript([
+        CScriptNum(CSV_DELAY),              # check csv delay before signature
+        OP_CHECKSEQUENCEVERIFY,             # does nothing if nSequence of tx is later than (blocks) delay  
+        OP_DROP,                            # remove delay value from stack
+        OP_1,                               # single byte 0x1 means the BIP-118 public key == taproot internal key
+        OP_CHECKSIG
+    ])
+
+def get_htlc_claim_tapscript(preimage_hash, pubkey):
+    # HTLC Claim output (with preimage)
+    return CScript([
+            OP_HASH160,                     # check preimage before signature
+            preimage_hash,                      
+            OP_EQUALVERIFY, 
+            pubkey,                         # pubkey of party claiming payment
+            OP_CHECKSIG                     
+        ])
+
+def get_htlc_refund_tapscript(expiry, pubkey):
+    # HTLC Refund output (after expiry)
+    return CScript([
+        CScriptNum(expiry),                 # check htlc expiry before signature
+        OP_CHECKLOCKTIMEVERIFY,             # does not change stack if nLockTime of tx is a later time
+        OP_DROP,                            # remove expiry value from stack
+        pubkey,                             # pubkey of party claiming refund
+        OP_CHECKSIG
+    ])
 
 def get_eltoo_update_script(state, witness, other_witness):
     """Get the script associated with a P2PKH."""
@@ -391,7 +561,7 @@ class UpdateTx(CTransaction):
 
         # add dummy vin, digest only serializes the nSequence value
         prevscript = CScript()
-        self.vin.append( CTxIn(outpoint = COutPoint(prevscript, 0), scriptSig = b"", nSequence=0xFFFFFFFE) )
+        self.vin.append( CTxIn(outpoint = COutPoint(prevscript, 0), scriptSig = b"", nSequence=DEFAULT_NSEQUENCE) )
 
         tx_hash = SegwitVersion1SignatureHash(prevscript, self, 0, SIGHASH_ANYPREVOUT | SIGHASH_SINGLE, CHANNEL_AMOUNT)
         signature = keys.update_key.sign_ecdsa(tx_hash) + chr(SIGHASH_ANYPREVOUT | SIGHASH_SINGLE).encode('latin-1')
@@ -407,7 +577,7 @@ class UpdateTx(CTransaction):
 
         # add dummy vin, digest only serializes the nSequence value
         prevscript = CScript()
-        self.vin.append( CTxIn(outpoint = COutPoint(prevscript, 0), scriptSig = b"", nSequence=0xFFFFFFFE) )
+        self.vin.append( CTxIn(outpoint = COutPoint(prevscript, 0), scriptSig = b"", nSequence=DEFAULT_NSEQUENCE) )
 
         for witness in witnesses:
             pk = ECPubKey()
@@ -434,7 +604,7 @@ class UpdateTx(CTransaction):
         self.wit.vtxinwit[0].scriptWitness = CScriptWitness()
         self.wit.vtxinwit[0].scriptWitness.stack = [b'', sig1, sig2, witness_program]
         assert(len(self.vin) == 0)
-        self.vin = [ CTxIn(outpoint = COutPoint(spend_tx.sha256, 0), scriptSig = b"", nSequence=0xFFFFFFFE) ]
+        self.vin = [ CTxIn(outpoint = COutPoint(spend_tx.sha256, 0), scriptSig = b"", nSequence=DEFAULT_NSEQUENCE) ]
 
 class SettleTx(CTransaction):
     __slots__ = ("payment_channel")
@@ -632,7 +802,7 @@ class RedeemTx(CTransaction):
             if settled_amounts[amount_index] > DUST_LIMIT:
                 # add input from signer
                 if amount_index is signer_index:
-                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=0xfffffffe) )
+                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=DEFAULT_NSEQUENCE) )
                 input_index += 1
             
         if not settled_only:
@@ -643,7 +813,7 @@ class RedeemTx(CTransaction):
                 if not self.include_invalid and not self.is_funder and htlc.preimage_hash not in self.secrets:
                     continue
                 if htlc.amount > DUST_LIMIT:
-                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=0xfffffffe) )
+                    self.vin.append( CTxIn(outpoint = COutPoint(spend_tx.sha256, input_index), scriptSig = b"", nSequence=DEFAULT_NSEQUENCE) )
                     input_index += 1
 
         self.wit.vtxinwit = []
@@ -725,7 +895,7 @@ class CloseTx(CTransaction):
         self.nLockTime = CLTV_START_TIME + self.payment_channel.state+1   
 
         # add setup_tx vin
-        self.vin = [ CTxIn(outpoint = COutPoint(setup_tx.sha256, 0), scriptSig = b"", nSequence=0xFFFFFFFE) ]
+        self.vin = [ CTxIn(outpoint = COutPoint(setup_tx.sha256, 0), scriptSig = b"", nSequence=DEFAULT_NSEQUENCE) ]
 
         #   build witness program for settled refund output (p2wpkh)
         pubkey = self.payment_channel.witness.payment_pk
@@ -1243,7 +1413,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         
         #   sign the tx fee input w/change output
         scriptPubKey = bytearray(fund_tx.vout[outIdx].scriptPubKey)
-        (sighash, err) = SignatureHash(fund_tx.vout[0].scriptPubKey, tx, inIdx, SIGHASH_ALL)
+        (sighash, err) = LegacySignatureHash(fund_tx.vout[0].scriptPubKey, tx, inIdx, SIGHASH_ALL)
         sig = fund_key.sign_ecdsa(sighash) + bytes(bytearray([SIGHASH_ALL]))
         tx.vin[inIdx].scriptSig = CScript([sig])
 
@@ -1277,7 +1447,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         privkey2 = generate_privkey()
         pubkey2,_ = compute_xonly_pubkey(privkey2)
         print("pubkey1: {}".format(pubkey1.hex()))
-        print("pubkey2: {}\n".format(pubkey2.hex()))
+        print("pubkey2: {}".format(pubkey2.hex()))
 
         # Method: 32B preimage - sha256(bytes)
         # Method: 20B digest - hash160(bytes)
@@ -1322,7 +1492,7 @@ class SimulateL2Tests(BitcoinTestFramework):
             print(op.hex()) if isinstance(op, bytes) else print(op)
 
         # Generate coins and create an output
-        tx = generate_and_send_coins(self.nodes[0], address)
+        tx = generate_and_send_coins(self.nodes[0], address, 100_000_000)
         print("Transaction {}, output 0\nsent to {}\n".format(tx.hash, address))
 
         # Create a spending transaction
@@ -1360,6 +1530,83 @@ class SimulateL2Tests(BitcoinTestFramework):
         assert not test_transaction(self.nodes[0], spending_tx)
         self.nodes[0].generate(delay)
         assert test_transaction(self.nodes[0], spending_tx)
+
+        print("Success!")
+
+    # test eltoo tapscript tx
+    def test_tapscript_eltoo(self):
+
+        # Musig(A,B) schnorr key to use as the taproot internal key for eltoo TS outputs
+        privkey_AB = generate_privkey()
+        pubkey_AB,_ = compute_xonly_pubkey(privkey_AB)
+
+        # schnorr keys to spend A balance and htlcs
+        privkey_A = generate_privkey()
+        pubkey_A,_ = compute_xonly_pubkey(privkey_A)
+
+        # schnorr keys to spend B balance and htlcs
+        privkey_B = generate_privkey()
+        pubkey_B,_ = compute_xonly_pubkey(privkey_B)
+
+        # htlc witness data
+        secret1 = b'secret1'
+        preimage1_hash = hash160(secret1)
+        secret2 = b'secret2'
+        preimage2_hash = hash160(secret2)
+        expiry = self.start_time + INVOICE_TIMEOUT
+
+        # addresses for settled balances
+        toA_address = self.nodes[0].getnewaddress(address_type="bech32")
+        toB_address = self.nodes[0].getnewaddress(address_type="bech32")
+
+        # addresses for each eltoo state or htlc output
+        state0_address = get_state_address(pubkey_AB, 0)
+        state1_address = get_state_address(pubkey_AB, 1)
+        htlc0_address = get_htlc_address(pubkey_AB, preimage1_hash, pubkey_A, expiry, pubkey_B)
+        htlc1_address = get_htlc_address(pubkey_AB, preimage2_hash, pubkey_A, expiry, pubkey_B)
+
+        # generate coins and create an output at state 0
+        update0_tx = generate_and_send_coins(self.nodes[0], state0_address, CHANNEL_AMOUNT)
+
+        # create and spend output at state 0 -> state 1
+        update1_tx = create_update_transaction(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
+        spend_update_tx(update1_tx, update0_tx, privkey_AB, spent_state=0)
+
+        # create and spend output at state 0 -> settlement outputs at state 0 (scriptPubKey and amount must match update0_tx) 
+        settle0_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT), (htlc0_address, 1000)])
+        spend_settle_tx(settle0_tx, update0_tx, privkey_AB, spent_state=0)
+        
+        # create and spend output at state 0 -> settlement outputs at state 1 (scriptPubKey and amount must match update1_tx)
+        settle1_apo_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
+        spend_settle_tx(settle1_apo_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUT)
+
+        # create and spend output at state 0 -> settlement outputs at state 1 that (only amount must match update1_tx)
+        settle1_apoas_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
+        spend_settle_tx(settle1_apoas_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT)
+
+        # add inputs for transaction fees
+        self.fund(tx=update1_tx, spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund(tx=settle0_tx, spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund(tx=settle1_apo_tx, spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+        self.fund(tx=settle1_apoas_tx, spend_tx=None, amount=CHANNEL_AMOUNT+FEE_AMOUNT)
+
+        # ---------------------------------------------------------------------
+
+        # succeed: update0_tx -> update1_tx
+        assert test_transaction(self.nodes[0], update1_tx)
+
+        # fail: settle update0_tx -> settle0_tx (before CSV delay)
+        assert not test_transaction(self.nodes[0], settle0_tx)
+        self.nodes[0].generate(CSV_DELAY)
+
+        # succeed: settle update0_tx -> settle0_tx (after CSV delay)
+        assert test_transaction(self.nodes[0], settle0_tx)
+
+        # fail: update0_tx -> settle1_apo_tx (SIGHASH_ANYPREVOUT commits to scriptPubKey of update1_tx so signature is invalid to spend from update0_tx output)
+        assert not test_transaction(self.nodes[0], settle1_apo_tx)
+
+        # succeed: settle update0_tx -> settle1_apoas_tx (SIGHASH_ANYPREVOUTANYSCRIPT does not commit to scriptPubKey so signature is valid to spend from update0_tx output)
+        assert test_transaction(self.nodes[0], settle1_apoas_tx)
 
         print("Success!")
 
@@ -1548,8 +1795,6 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # B commits the update tx to start the uncooperative close of the channel
         txid = self.commit(update_tx[B])
-
-        # fund the transaction fees for the update tx before committing it 
 
         # mine the update tx into a new block, and advance blocks until settle tx can be spent
         self.nodes[0].generate(CSV_DELAY+10)
@@ -1761,26 +2006,29 @@ class SimulateL2Tests(BitcoinTestFramework):
         # test bitcoinops workshop 2-of-2 csa tapscript tx
         self.test_bitcoinops_workshop_tapscript()
 
+        # test eltoo tapscript tx
+        self.test_tapscript_eltoo()
+
         # test two nodes performing an uncooperative close with one htlc pending, tested cheats:
         # - payer tries to commit a refund tx before the CSV delay expires
         # - payer tries to commit spend an update tx to an update tx with an earlier state
         # - payer tries to redeem HTLC before invoice expires
-        self.test1(payer_sweeps_utxo=True)
+        ## TBD self.test1(payer_sweeps_utxo=True)
 
         # test two nodes performing an uncooperative close with one htlc pending, tested cheats:
         # - payee tries to settle last state before the CSV timeout
         # - payee tries to redeem HTLC with wrong secret
-        self.test1(payer_sweeps_utxo=False)
+        ## TBDself.test1(payer_sweeps_utxo=False)
         
         # test node A paying node C via node B, node B uses secret passed by C to uncooperatively close the channel with C
         # - test cheat of node A using old update
         # - test cheat of B replacing with a newer one
-        self.test2()
+        ## TBDself.test2()
 
         # test node A paying node C via node B, node B uses secret passed by C to cooperative update their channels
         # - test cooperative channel updating
         # - test cooperative channel closing
-        self.test3()
+        ## TBDself.test3()
 
 if __name__ == '__main__':
     SimulateL2Tests().main()
