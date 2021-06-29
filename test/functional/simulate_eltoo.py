@@ -10,6 +10,7 @@ from collections import OrderedDict, namedtuple
 import copy
 from io import BytesIO
 import json
+from debug_utils import DebugTaprootSignatureHash
 from test_framework.address import program_to_witness
 from test_framework.blocktools import (
     create_block,
@@ -78,7 +79,6 @@ from test_framework.script import (
     OP_VERIFY,
     SIGHASH_DEFAULT,
     SIGHASH_ALL,
-    SIGHASH_ANYPREVOUT,
     SIGHASH_NONE,
     SIGHASH_SINGLE,
     SIGHASH_ANYONECANPAY,
@@ -190,12 +190,13 @@ def generate_and_send_coins(node, address, amount_sat):
 
 
 # from bitcoinops util.py
-def test_transaction(node, tx):
+def test_transaction(node, tx, error_message=None):
     tx_str = tx.serialize().hex()
     ret = node.testmempoolaccept(rawtxs=[tx_str], maxfeerate=0)[0]
     print(ret)
+    if error_message is not None:
+        assert ret['reject-reason'] == error_message
     return ret['allowed']
-
 
 def flatten(lst):
     ret = []
@@ -232,7 +233,6 @@ def dump_json_test(tx, input_utxos, idx, success, failure):
 
 def int_to_bytes(x) -> bytes:
     return x.to_bytes((x.bit_length() + 7) // 8, 'big')
-
 
 def get_state_address(inner_pubkey, state):
     update_script = get_update_tapscript(state)
@@ -304,7 +304,7 @@ def create_settle_transaction(node, source_tx, outputs):
     return settle_tx
 
 
-def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT):
+def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT, debug=False):
     # Generate taptree for update tx at state 'spend_state'
     pubkey, _ = compute_xonly_pubkey(privkey)
     update_script = get_update_tapscript(spent_state)
@@ -315,6 +315,17 @@ def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_A
 
     # Generate a Taproot signature hash to spend `nValue` from any previous output with any script (ignore prevout's scriptPubKey)
     sighash = TaprootSignatureHash(
+        tx,
+        [funding_tx.vout[0]],
+        SIGHASH_SINGLE | sighash_flag,
+        input_index=0,
+        scriptpath=True,
+        script=CScript(),
+        key_ver=KEY_VERSION_ANYPREVOUT,
+    )
+
+    if debug is True:
+        DebugTaprootSignatureHash(
         tx,
         [funding_tx.vout[0]],
         SIGHASH_SINGLE | sighash_flag,
@@ -337,6 +348,7 @@ def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_A
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
+    return signature
 
 def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUT):
     # Generate taptree for update tx at state n
@@ -1642,6 +1654,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         # addresses for each eltoo state or htlc output
         state0_address = get_state_address(pubkey_AB, 0)
         state1_address = get_state_address(pubkey_AB, 1)
+        state2_address = get_state_address(pubkey_AB, 2)
         htlc0_address = get_htlc_address(pubkey_AB, preimage1_hash, pubkey_A, expiry, pubkey_B)
         htlc1_address = get_htlc_address(pubkey_AB, preimage2_hash, pubkey_A, expiry, pubkey_B)
 
@@ -1650,7 +1663,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # create and spend output at state 0 -> state 1
         update1_tx = create_update_transaction(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
-        spend_update_tx(update1_tx, update0_tx, privkey_AB, spent_state=0)
+        update1_sig = spend_update_tx(update1_tx, update0_tx, privkey_AB, spent_state=0)
 
         # create and spend output at state 0 -> settlement outputs at state 0 (scriptPubKey and amount must match update0_tx) 
         settle0_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT), (htlc0_address, 1000)])
@@ -1664,29 +1677,76 @@ class SimulateL2Tests(BitcoinTestFramework):
         settle1_apoas_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT - 2000), (toB_address, 1000), (htlc1_address, 1000)])
         spend_settle_tx(settle1_apoas_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT)
 
+        # create and spend output at state 1 -> settlement outputs at state 1 (scriptPubKey and amount must match update1_tx)
+        settle1_tx = create_settle_transaction(self.nodes[0], source_tx=update1_tx, outputs=[(toA_address, CHANNEL_AMOUNT - 2000), (toB_address, 1000), (htlc1_address, 1000)])
+        spend_settle_tx(settle1_tx, update1_tx, privkey_AB, spent_state=1)
+
+        # create and spend output at state 1 -> state 2
+        update2_tx = create_update_transaction(self.nodes[0], source_tx=update1_tx, dest_addr=state2_address, state=2, amount_sat=CHANNEL_AMOUNT)
+        spend_update_tx(update2_tx, update1_tx, privkey_AB, spent_state=1, debug=True)
+
         # add inputs for transaction fees
-        self.fund(tx=update1_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
         self.fund(tx=settle0_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
+        self.fund(tx=update1_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
         self.fund(tx=settle1_apo_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
         self.fund(tx=settle1_apoas_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
 
         # ----------------------------------------
 
-        # succeed: update0_tx -> update1_tx
+        # succeed: test that update0_tx -> update1_tx is valid
+        # because the script succeeds and the SIGHASH_ANYPREVOUTANYSCRIPT signature uses the same internal pubkey
         assert test_transaction(self.nodes[0], update1_tx)
 
-        # fail: settle update0_tx -> settle0_tx (before CSV delay)
-        assert not test_transaction(self.nodes[0], settle0_tx)
+        # fail: test that settle update0_tx -> settle0_tx  is invalid
+        # because before CSV delay
+        assert not test_transaction(self.nodes[0], settle0_tx, 'non-BIP68-final')
         self.nodes[0].generate(CSV_DELAY)
 
-        # succeed: settle update0_tx -> settle0_tx (after CSV delay)
+        # succeed: test that settle update0_tx -> settle0_tx is valid
+        # because after CSV delay and the SIGHASH_ANYPREVOUT signature commits to the scriptPubKey of update0_tx
         assert test_transaction(self.nodes[0], settle0_tx)
 
-        # fail: update0_tx -> settle1_apo_tx (SIGHASH_ANYPREVOUT commits to scriptPubKey of update1_tx so signature is invalid to spend from update0_tx output)
-        assert not test_transaction(self.nodes[0], settle1_apo_tx)
+        # fail: test that update0_tx -> settle1_apo_tx is invalid
+        # because the SIGHASH_ANYPREVOUT signature commits to the scriptPubKey of update1_tx, not update0_tx
+        assert not test_transaction(self.nodes[0], settle1_apo_tx, 'non-mandatory-script-verify-flag (Invalid Schnorr signature)')
 
-        # succeed: settle update0_tx -> settle1_apoas_tx (SIGHASH_ANYPREVOUTANYSCRIPT does not commit to scriptPubKey so signature is valid to spend from update0_tx output)
+        # succeed: test that update0_tx -> settle1_apoas_tx is valid
+        # because the SIGHASH_ANYPREVOUTANYSCRIPT signature does not commit to a specific scriptPubKey, should use apo instead
         assert test_transaction(self.nodes[0], settle1_apoas_tx)
+
+        # succeed: commit to blockchain update from state 0 to state 1
+        update1_txid = self.commit(update1_tx)
+        self.nodes[0].generate(CSV_DELAY)
+
+        # rebind the prevout of eltoo inputs to the onchain update1_txid output before adding funding inputs (signed with SIGHASH_ALL)
+        settle1_tx.vin[0] = CTxIn(outpoint=COutPoint(int(update1_txid, 16), 0), nSequence=CSV_DELAY)
+        update2_tx.vin[0] = CTxIn(outpoint=COutPoint(int(update1_txid, 16), 0), nSequence=0)
+        self.fund(tx=settle1_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
+        self.fund(tx=update2_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
+
+        # succeed: test that update1_tx -> settle1_tx is valid
+        # because the SIGHASH_ANYPREVOUT signature commits to the scriptPubKey of update1_tx
+        assert test_transaction(self.nodes[0], settle1_tx)
+
+        # succeed: test that update1_tx -> update2_tx is valid
+        # because OP_CHECKLOCKTIMEVERIFY check succeeds for a update2_tx which is signed with a later nLockTime
+        assert test_transaction(self.nodes[0], update2_tx)
+
+        # succeed: commit to blockchain update from state 1 to state 2
+        update2_txid = self.commit(update2_tx)
+
+        # create and spend output at state 2 -> state 1
+        update1b_tx = create_update_transaction(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
+        update1b_sig = spend_update_tx(update1b_tx, update0_tx, privkey_AB, spent_state=2)
+        assert update1_sig == update1b_sig
+
+        # rebind the prevout of eltoo inputs to the onchain update2_txid output before adding funding inputs (signed with SIGHASH_ALL)
+        update1b_tx.vin[0] = CTxIn(outpoint=COutPoint(int(update2_txid, 16), 0), nSequence=0)
+        self.fund(tx=update1b_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
+
+        # fail: test that update2_tx -> update1_tx is invalid
+        # because OP_CHECKLOCKTIMEVERIFY check fails for a update1_tx which is signed with an earlier nLockTime
+        assert not test_transaction(self.nodes[0], update1b_tx, 'non-mandatory-script-verify-flag (Locktime requirement not satisfied)')
 
         print("Success!")
 
