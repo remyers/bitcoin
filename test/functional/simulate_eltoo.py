@@ -34,8 +34,7 @@ from test_framework.messages import (
     CTransaction,
     CTxIn,
     CTxInWitness,
-    CTxOut,
-    ToHex
+    CTxOut
 )
 from test_framework.p2p import P2PDataStore
 from test_framework.script import (
@@ -303,9 +302,51 @@ def create_settle_transaction(node, source_tx, outputs):
 
     return settle_tx
 
+def create_htlc_claim_transaction(node, source_tx, dest_addr, htlc_index, amount_sat):
+    # HTLC CLAIM TX
+    # nlocktime: 0
+    # nsequence: DEFAULT_NSEQUENCE
+    # sighash=SINGLE | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the settle leaf is commited to in the root hash used as the scriptPubKey)
+    # output 0: (party with preimage)
+    htlc_claim_tx = CTransaction()
+    htlc_claim_tx.nVersion = 2
+    htlc_claim_tx.nLockTime = 0
+
+    # Populate the transaction inputs, first 2 inputs are settled balances
+    source_tx.rehash()
+    outpoint = COutPoint(int(source_tx.hash, 16), htlc_index+2)
+    htlc_claim_tx.vin = [CTxIn(outpoint=outpoint, nSequence=DEFAULT_NSEQUENCE)]
+
+    scriptpubkey = bytes.fromhex(node.getaddressinfo(dest_addr)['scriptPubKey'])
+    dest_output = CTxOut(nValue=amount_sat, scriptPubKey=scriptpubkey)
+    htlc_claim_tx.vout = [dest_output]
+
+    return htlc_claim_tx
+
+def create_htlc_refund_transaction(node, source_tx, dest_addr, htlc_index, amount_sat, expiry):
+    # HTLC REFUND TX
+    # nlocktime: 0
+    # nsequence: DEFAULT_NSEQUENCE
+    # sighash=SINGLE | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the settle leaf is commited to in the root hash used as the scriptPubKey)
+    # output 0: (party with preimage)
+    htlc_refund_tx = CTransaction()
+    htlc_refund_tx.nVersion = 2
+    htlc_refund_tx.nLockTime = expiry
+
+    # Populate the transaction inputs, first 2 inputs are settled balances
+    source_tx.rehash()
+    outpoint = COutPoint(int(source_tx.hash, 16), htlc_index+2)
+    htlc_refund_tx.vin = [CTxIn(outpoint=outpoint, nSequence=DEFAULT_NSEQUENCE)]
+
+    scriptpubkey = bytes.fromhex(node.getaddressinfo(dest_addr)['scriptPubKey'])
+    dest_output = CTxOut(nValue=amount_sat, scriptPubKey=scriptpubkey)
+    htlc_refund_tx.vout = [dest_output]
+
+    return htlc_refund_tx
+
 
 def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT, debug=False):
-    # Generate taptree for update tx at state 'spend_state'
+    # Generate taptree for eltoo tx at state 'spend_state'
     pubkey, _ = compute_xonly_pubkey(privkey)
     update_script = get_update_tapscript(spent_state)
     settle_script = get_settle_tapscript()
@@ -351,7 +392,7 @@ def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_A
     return signature
 
 def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUT):
-    # Generate taptree for update tx at state n
+    # Generate taptree for eltoo tx at state n
     pubkey, _ = compute_xonly_pubkey(privkey)
     update_script = get_update_tapscript(spent_state)
     settle_script = get_settle_tapscript()
@@ -380,6 +421,72 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     # Add witness to transaction
     inputs = [signature]
     witness_elements = [settle_script, settle_control_block]
+    tx.wit.vtxinwit.append(CTxInWitness())
+    tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
+
+def spend_htlc_claim_tx(tx, settle_tx, privkey, htlc_index, preimage_hash, claim_pubkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+    # Generate taptree for htlc tx
+    inner_pubkey, _ = compute_xonly_pubkey(privkey)
+    htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
+    htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
+    htlc_taptree = taproot_construct(inner_pubkey, [
+        ("htlc_claim", htlc_claim_script), ("htlc_refund", htlc_refund_script)
+    ])
+
+    # Generate the Taproot Signature Hash for signing
+    sighash = TaprootSignatureHash(
+        tx,
+        [settle_tx.vout[0]],
+        SIGHASH_SINGLE | sighash_flag,
+        input_index=htlc_index+2,
+        scriptpath=True,
+        script=htlc_claim_script,
+        key_ver=KEY_VERSION_ANYPREVOUT,
+    )
+
+    # Sign with internal private key
+    signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+
+    # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
+    htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
+    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.inner_pubkey + htlc_claim_leaf.merklebranch
+
+    # Add witness to transaction
+    inputs = [signature]
+    witness_elements = [htlc_claim_script, htlc_claim_control_block]
+    tx.wit.vtxinwit.append(CTxInWitness())
+    tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
+
+def spend_htlc_refund_tx(tx, update_tx, privkey, preimage_hash, claim_pubkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+    # Generate taptree for update tx at state n
+    inner_pubkey, _ = compute_xonly_pubkey(privkey)
+    htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
+    htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
+    htlc_taptree = taproot_construct(inner_pubkey, [
+        ("htlc_claim", htlc_claim_script), ("htlc_refund", htlc_refund_script)
+    ])
+
+    # Generate the Taproot Signature Hash for signing
+    sighash = TaprootSignatureHash(
+        tx,
+        [update_tx.vout[0]],
+        SIGHASH_SINGLE | sighash_flag,
+        input_index=0,
+        scriptpath=True,
+        script=htlc_claim_script,
+        key_ver=KEY_VERSION_ANYPREVOUT,
+    )
+
+    # Sign with internal private key
+    signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+
+    # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
+    htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
+    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.inner_pubkey + htlc_claim_leaf.merklebranch
+
+    # Add witness to transaction
+    inputs = [signature]
+    witness_elements = [htlc_claim_script, htlc_claim_control_block]
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
@@ -1517,7 +1624,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         tx.rehash()
 
         # confirm it is in the mempool
-        tx_hex = ToHex(tx)
+        tx_hex = tx.serialize().hex()
         if error_code is None or error_message is None:
             txid = self.nodes[0].sendrawtransaction(tx_hex)
         else:
@@ -1641,6 +1748,8 @@ class SimulateL2Tests(BitcoinTestFramework):
         pubkey_B, _ = compute_xonly_pubkey(privkey_B)
 
         # htlc witness data
+        secret0 = b'secret0'
+        preimage0_hash = hash160(secret0)
         secret1 = b'secret1'
         preimage1_hash = hash160(secret1)
         secret2 = b'secret2'
@@ -1655,8 +1764,9 @@ class SimulateL2Tests(BitcoinTestFramework):
         state0_address = get_state_address(pubkey_AB, 0)
         state1_address = get_state_address(pubkey_AB, 1)
         state2_address = get_state_address(pubkey_AB, 2)
-        htlc0_address = get_htlc_address(pubkey_AB, preimage1_hash, pubkey_A, expiry, pubkey_B)
-        htlc1_address = get_htlc_address(pubkey_AB, preimage2_hash, pubkey_A, expiry, pubkey_B)
+        htlc0_address = get_htlc_address(pubkey_AB, preimage0_hash, pubkey_A, expiry, pubkey_B)
+        htlc1_address = get_htlc_address(pubkey_AB, preimage1_hash, pubkey_A, expiry, pubkey_B)
+        htlc2_address = get_htlc_address(pubkey_AB, preimage2_hash, pubkey_A, expiry, pubkey_B)
 
         # generate coins and create an output at state 0
         update0_tx = generate_and_send_coins(self.nodes[0], state0_address, CHANNEL_AMOUNT)
@@ -1684,6 +1794,10 @@ class SimulateL2Tests(BitcoinTestFramework):
         # create and spend output at state 1 -> state 2
         update2_tx = create_update_transaction(self.nodes[0], source_tx=update1_tx, dest_addr=state2_address, state=2, amount_sat=CHANNEL_AMOUNT)
         spend_update_tx(update2_tx, update1_tx, privkey_AB, spent_state=1, debug=True)
+
+        # create and spend output at state 2 -> settlement outputs at state 2 (scriptPubKey and amount must match update2_tx)
+        settle2_tx = create_settle_transaction(self.nodes[0], source_tx=update1_tx, outputs=[(toA_address, CHANNEL_AMOUNT - 3000), (toB_address, 2000), (htlc2_address, 1000)])
+        spend_settle_tx(settle2_tx, update2_tx, privkey_AB, spent_state=2)
 
         # add inputs for transaction fees
         self.fund(tx=settle0_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
@@ -1747,6 +1861,19 @@ class SimulateL2Tests(BitcoinTestFramework):
         # fail: test that update2_tx -> update1_tx is invalid
         # because OP_CHECKLOCKTIMEVERIFY check fails for a update1_tx which is signed with an earlier nLockTime
         assert not test_transaction(self.nodes[0], update1b_tx, 'non-mandatory-script-verify-flag (Locktime requirement not satisfied)')
+
+        # rebind the prevout of eltoo inputs to the onchain update1_txid output before adding funding inputs (signed with SIGHASH_ALL)
+        settle2_tx.vin[0] = CTxIn(outpoint=COutPoint(int(update2_txid, 16), 0), nSequence=CSV_DELAY)
+        self.fund(tx=settle2_tx, spend_tx=None, amount=CHANNEL_AMOUNT + FEE_AMOUNT)
+
+        # succeed: commit to blockchain settlement from state 2 after CSV delay
+        self.nodes[0].generate(CSV_DELAY)
+        settle2_txid = self.commit(settle2_tx)
+
+        # peer B claims inflight htlc output from uncooperative close settle2 transaction
+        htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toB_address, 0, 1000)
+        spend_htlc_claim_tx(htlc_claim_tx, settle2_tx, privkey_AB, 0, preimage2_hash, toB_address, expiry, pubkey_B )
+        self.fund(tx=htlc_claim_tx, spend_tx=None, amount=1000 + FEE_AMOUNT)
 
         print("Success!")
 

@@ -7,8 +7,7 @@ from test_framework.messages import (
     CTransaction,
     CTxIn,
     CTxInWitness,
-    CTxOut,
-    ToHex
+    CTxOut
 )
 from test_framework.script import (
     CScript,
