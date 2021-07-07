@@ -2279,6 +2279,10 @@ class SimulateL2Tests(BitcoinTestFramework):
         txid = self.commit(close_tx)
 
     def run_test(self):
+        # new default wallet should load by default when there are no other wallets
+        self.nodes[0].createwallet(wallet_name='', load_on_startup=False)
+        self.restart_node(0)
+
         # create some coinbase txs to spend
         self.init_coinbase()
 
