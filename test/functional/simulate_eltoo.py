@@ -424,9 +424,13 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def spend_htlc_claim_tx(tx, settle_tx, privkey, preimage, claim_pubkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
-    # Generate taptree for htlc tx
+def spend_htlc_claim_tx(tx, settle_tx, privkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+
     preimage_hash = hash160(preimage)
+    claim_pubkey, _ = compute_xonly_pubkey(claim_privkey)
+    claim_pubkey = b'\x01'+claim_pubkey
+
+    # Generate taptree for htlc tx
     inner_pubkey, _ = compute_xonly_pubkey(privkey)
     htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
     htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
@@ -446,7 +450,7 @@ def spend_htlc_claim_tx(tx, settle_tx, privkey, preimage, claim_pubkey, expiry, 
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+    signature = sign_schnorr(claim_privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
@@ -474,7 +478,7 @@ def spend_htlc_refund_tx(tx, update_tx, privkey, preimage_hash, claim_pubkey, ex
         SIGHASH_SINGLE | sighash_flag,
         input_index=0,
         scriptpath=True,
-        script=htlc_claim_script,
+        script=htlc_refund_script,
         key_ver=KEY_VERSION_ANYPREVOUT,
     )
 
@@ -482,12 +486,12 @@ def spend_htlc_refund_tx(tx, update_tx, privkey, preimage_hash, claim_pubkey, ex
     signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
-    htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
-    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.internal_pubkey + htlc_claim_leaf.merklebranch
+    htlc_refund_leaf = htlc_taptree.leaves["htlc_refund"]
+    htlc_refund_control_block = bytes([htlc_refund_leaf.version + htlc_taptree.negflag]) + htlc_taptree.internal_pubkey + htlc_refund_leaf.merklebranch
 
     # Add witness to transaction
     inputs = [signature]
-    witness_elements = [htlc_claim_script, htlc_claim_control_block]
+    witness_elements = [htlc_refund_script, htlc_refund_control_block]
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
@@ -522,7 +526,7 @@ def get_htlc_claim_tapscript(preimage_hash, pubkey):
         OP_HASH160,                             # check preimage before signature
         preimage_hash,
         OP_EQUALVERIFY,
-        pubkey,                                 # pubkey of party claiming payment
+        pubkey,                            # pubkey of party claiming payment
         OP_CHECKSIG
     ])
 
@@ -533,7 +537,7 @@ def get_htlc_refund_tapscript(expiry, pubkey):
         CScriptNum(expiry),                     # check htlc expiry before signature
         OP_CHECKLOCKTIMEVERIFY,                 # does not change stack if nLockTime of tx is a later time
         OP_DROP,                                # remove expiry value from stack
-        pubkey,                                 # pubkey of party claiming refund
+        pubkey,                            # pubkey of party claiming refund
         OP_CHECKSIG
     ])
 
@@ -1743,10 +1747,12 @@ class SimulateL2Tests(BitcoinTestFramework):
         # schnorr keys to spend A balance and htlcs
         privkey_A = generate_privkey()
         pubkey_A, _ = compute_xonly_pubkey(privkey_A)
+        pubkey_A = b'\x01'+pubkey_A
 
         # schnorr keys to spend B balance and htlcs
         privkey_B = generate_privkey()
         pubkey_B, _ = compute_xonly_pubkey(privkey_B)
+        pubkey_B = b'\x01'+pubkey_B
 
         # htlc witness data
         secret0 = b'secret0'
@@ -1872,8 +1878,8 @@ class SimulateL2Tests(BitcoinTestFramework):
         settle2_txid = self.commit(settle2_tx)
 
         # peer B creates tx to claim inflight htlc output from uncooperative close settle2 transaction
-        htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toB_address, 0, 1000)
-        spend_htlc_claim_tx(htlc_claim_tx, settle2_tx, privkey_AB, secret2, pubkey_B, expiry, pubkey_A )
+        htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toA_address, 0, 1000)
+        spend_htlc_claim_tx(htlc_claim_tx, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B )
         self.fund(tx=htlc_claim_tx, spend_tx=None, amount=1000 + FEE_AMOUNT)
 
         # succeed: test that htlc claim tx is valid
