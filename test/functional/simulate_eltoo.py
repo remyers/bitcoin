@@ -239,7 +239,7 @@ def get_state_address(inner_pubkey, state):
     taptree = taproot_construct(inner_pubkey, [
         ("update", update_script), ("settle", settle_script)
     ])
-    tweaked, _ = tweak_add_pubkey(taptree.inner_pubkey, taptree.tweak)
+    tweaked, _ = tweak_add_pubkey(taptree.internal_pubkey, taptree.tweak)
     address = program_to_witness(version=0x01, program=tweaked, main=False)
     return address
 
@@ -250,7 +250,7 @@ def get_htlc_address(inner_pubkey, preimage_hash, claim_pubkey, expiry, refund_p
     taptree = taproot_construct(inner_pubkey, [
         ("htlc_claim", htlc_claim_script), ("htlc_refund", htlc_refund_script)
     ])
-    tweaked, _ = tweak_add_pubkey(taptree.inner_pubkey, taptree.tweak)
+    tweaked, _ = tweak_add_pubkey(taptree.internal_pubkey, taptree.tweak)
     address = program_to_witness(version=0x01, program=tweaked, main=False)
     return address
 
@@ -381,7 +381,7 @@ def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_A
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     update_leaf = eltoo_taptree.leaves["update"]
-    update_control_block = bytes([update_leaf.version + eltoo_taptree.negflag]) + eltoo_taptree.inner_pubkey + update_leaf.merklebranch
+    update_control_block = bytes([update_leaf.version + eltoo_taptree.negflag]) + eltoo_taptree.internal_pubkey + update_leaf.merklebranch
 
     # Add witness to transaction
     inputs = [signature]
@@ -416,7 +416,7 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     settle_leaf = eltoo_taptree.leaves["settle"]
-    settle_control_block = bytes([settle_leaf.version + eltoo_taptree.negflag]) + eltoo_taptree.inner_pubkey + settle_leaf.merklebranch
+    settle_control_block = bytes([settle_leaf.version + eltoo_taptree.negflag]) + eltoo_taptree.internal_pubkey + settle_leaf.merklebranch
 
     # Add witness to transaction
     inputs = [signature]
@@ -424,8 +424,9 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def spend_htlc_claim_tx(tx, settle_tx, privkey, htlc_index, preimage_hash, claim_pubkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+def spend_htlc_claim_tx(tx, settle_tx, privkey, preimage, claim_pubkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
     # Generate taptree for htlc tx
+    preimage_hash = hash160(preimage)
     inner_pubkey, _ = compute_xonly_pubkey(privkey)
     htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
     htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
@@ -438,7 +439,7 @@ def spend_htlc_claim_tx(tx, settle_tx, privkey, htlc_index, preimage_hash, claim
         tx,
         [settle_tx.vout[0]],
         SIGHASH_SINGLE | sighash_flag,
-        input_index=htlc_index+2,
+        input_index=0,
         scriptpath=True,
         script=htlc_claim_script,
         key_ver=KEY_VERSION_ANYPREVOUT,
@@ -449,10 +450,10 @@ def spend_htlc_claim_tx(tx, settle_tx, privkey, htlc_index, preimage_hash, claim
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
-    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.inner_pubkey + htlc_claim_leaf.merklebranch
+    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.internal_pubkey + htlc_claim_leaf.merklebranch
 
     # Add witness to transaction
-    inputs = [signature]
+    inputs = [signature, preimage]
     witness_elements = [htlc_claim_script, htlc_claim_control_block]
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
@@ -482,7 +483,7 @@ def spend_htlc_refund_tx(tx, update_tx, privkey, preimage_hash, claim_pubkey, ex
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
-    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.inner_pubkey + htlc_claim_leaf.merklebranch
+    htlc_claim_control_block = bytes([htlc_claim_leaf.version + htlc_taptree.negflag]) + htlc_taptree.internal_pubkey + htlc_claim_leaf.merklebranch
 
     # Add witness to transaction
     inputs = [signature]
@@ -1715,7 +1716,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
         leaf = taptree.leaves["csa_delay"]
-        control_block = bytes([leaf.version + taptree.negflag]) + taptree.inner_pubkey + leaf.merklebranch
+        control_block = bytes([leaf.version + taptree.negflag]) + taptree.internal_pubkey + leaf.merklebranch
 
         # Add witness to transaction
         inputs = [signature2, signature1]
@@ -1870,10 +1871,14 @@ class SimulateL2Tests(BitcoinTestFramework):
         self.nodes[0].generate(CSV_DELAY)
         settle2_txid = self.commit(settle2_tx)
 
-        # peer B claims inflight htlc output from uncooperative close settle2 transaction
+        # peer B creates tx to claim inflight htlc output from uncooperative close settle2 transaction
         htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toB_address, 0, 1000)
-        spend_htlc_claim_tx(htlc_claim_tx, settle2_tx, privkey_AB, 0, preimage2_hash, toB_address, expiry, pubkey_B )
+        spend_htlc_claim_tx(htlc_claim_tx, settle2_tx, privkey_AB, secret2, pubkey_B, expiry, pubkey_A )
         self.fund(tx=htlc_claim_tx, spend_tx=None, amount=1000 + FEE_AMOUNT)
+
+        # succeed: test that htlc claim tx is valid
+        # because preimage is correct
+        assert test_transaction(self.nodes[0], htlc_claim_tx)
 
         print("Success!")
 
