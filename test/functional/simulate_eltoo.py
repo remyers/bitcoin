@@ -402,7 +402,7 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def spend_htlc_claim_tx(tx, settle_tx, privkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+def spend_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
 
     preimage_hash = hash160(preimage)
     claim_pubkey, _ = compute_xonly_pubkey(claim_privkey)
@@ -419,7 +419,7 @@ def spend_htlc_claim_tx(tx, settle_tx, privkey, preimage, claim_privkey, expiry,
     # Generate the Taproot Signature Hash for signing
     sighash = TaprootSignatureHash(
         tx,
-        [settle_tx.vout[0]],
+        [settle_tx.vout[htlc_index+2]],
         SIGHASH_SINGLE | sighash_flag,
         input_index=0,
         scriptpath=True,
@@ -1760,7 +1760,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # peer B creates tx to claim inflight htlc output from uncooperative close settle2 transaction
         htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toA_address, 0, 1000)
-        spend_htlc_claim_tx(htlc_claim_tx, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B )
+        spend_htlc_claim_tx(htlc_claim_tx, 0, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B)
         self.fund(tx=htlc_claim_tx, spend_tx=None, amount=1000 + FEE_AMOUNT)
 
         # succeed: test that htlc claim tx is valid
