@@ -258,7 +258,7 @@ def create_settle_transaction(node, source_tx, outputs):
     # SETTLE TX
     # nlocktime: CLTV_START_TIME + state + 1
     # nsequence: CSV_DELAY
-    # sighash=SINGLE | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the update leaf is commited to in the root hash used as the scriptPubKey)
+    # sighash=ALL | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the update leaf is commited to in the root hash used as the scriptPubKey)
     # output 0: A
     # output 1: B
     # output 2..n: <HTLCs>
@@ -375,12 +375,13 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     eltoo_taptree = taproot_construct(pubkey, [
         ("update", update_script), ("settle", settle_script)
     ])
+    sighash_flag |= SIGHASH_ALL
 
     # Generate the Taproot Signature Hash for signing
     sighash = TaprootSignatureHash(
         tx,
         [update_tx.vout[0]],
-        SIGHASH_SINGLE | sighash_flag,
+        sighash_flag,
         input_index=0,
         scriptpath=True,
         script=settle_script,
@@ -388,7 +389,7 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+    signature = sign_schnorr(privkey, sighash) + chr(sighash_flag).encode('latin-1')
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     settle_leaf = eltoo_taptree.leaves["settle"]
