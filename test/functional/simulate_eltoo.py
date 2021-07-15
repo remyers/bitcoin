@@ -439,8 +439,11 @@ def spend_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_priv
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def spend_htlc_refund_tx(tx, htlc_index, update_tx, privkey, preimage_hash, claim_pubkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
-    # Generate taptree for update tx at state n
+def spend_htlc_refund_tx(tx, htlc_index, settle_tx, privkey, preimage_hash, claim_pubkey, expiry, refund_privkey, sighash_flag=SIGHASH_ANYPREVOUT):
+    refund_pubkey, _ = compute_xonly_pubkey(refund_privkey)
+    refund_pubkey = b'\x01'+refund_pubkey
+
+    # Generate taptree for htlc tx
     inner_pubkey, _ = compute_xonly_pubkey(privkey)
     htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
     htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
@@ -451,7 +454,7 @@ def spend_htlc_refund_tx(tx, htlc_index, update_tx, privkey, preimage_hash, clai
     # Generate the Taproot Signature Hash for signing
     sighash = TaprootSignatureHash(
         tx,
-        [update_tx.vout[htlc_index+2]],
+        [settle_tx.vout[htlc_index+2]],
         SIGHASH_SINGLE | sighash_flag,
         input_index=0,
         scriptpath=True,
@@ -460,7 +463,7 @@ def spend_htlc_refund_tx(tx, htlc_index, update_tx, privkey, preimage_hash, clai
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+    signature = sign_schnorr(refund_privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     htlc_refund_leaf = htlc_taptree.leaves["htlc_refund"]
@@ -1446,7 +1449,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # set initial blocktime to current time
         self.start_time = int(1500000000)  # int(time.time())
-        self.nodes[0].setmocktime = self.start_time
+        self.nodes[0].setmocktime(self.start_time)
 
         # generate mature coinbase to spend
         NUM_BUFFER_BLOCKS_TO_GENERATE = 110
@@ -1753,7 +1756,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         assert test_transaction(self.nodes[0], settle2_tx)
         settle2_txid = self.commit(settle2_tx)
 
-        # peer B creates tx to claim inflight htlc output from uncooperative close settle2 transaction
+        # peer A creates tx to claim inflight htlc output from uncooperative close using settle2 transaction
         htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toA_address, 0, 1000)
         spend_htlc_claim_tx(htlc_claim_tx, 0, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B)
         self.fund(tx=htlc_claim_tx, spend_tx=None, amount=FEE_AMOUNT)
@@ -1761,6 +1764,23 @@ class SimulateL2Tests(BitcoinTestFramework):
         # succeed: test that htlc claim tx is valid
         # because preimage is correct
         assert test_transaction(self.nodes[0], htlc_claim_tx)
+
+        # peer B creates tx to refund inflight htlc output from uncooperative close using settle2 transaction
+        htlc_refund_tx = create_htlc_refund_transaction(self.nodes[0], settle2_tx, toB_address, 0, 1000, expiry)
+        spend_htlc_refund_tx(htlc_refund_tx, 0, settle2_tx, privkey_AB, preimage2_hash, pubkey_A, expiry, privkey_B)
+        self.fund(tx=htlc_refund_tx, spend_tx=None, amount=FEE_AMOUNT)
+
+        # fail: test that htlc refund tx is valid
+        # because timelock has not expired
+        assert not test_transaction(self.nodes[0], htlc_refund_tx, 'non-final')
+
+        # set time of last 6 blocks so median time past of last 11 blocks is past expiry (see BIP-113)
+        self.nodes[0].setmocktime(expiry+1)
+        self.nodes[0].generate(6)
+
+        # succeed: test that htlc refund tx is valid
+        # because timelock has expired
+        assert test_transaction(self.nodes[0], htlc_refund_tx)
 
         print("Success!")
 
@@ -1788,7 +1808,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         txid = self.commit(setup_tx)
 
         # mine the setup tx into a new block
-        self.nodes[0].setmocktime = self.start_time
+        self.nodes[0].setmocktime(self.start_time)
         self.nodes[0].generate(1)
 
         # A tries to commit the refund tx before the CSV delay has expired
@@ -1843,7 +1863,7 @@ class SimulateL2Tests(BitcoinTestFramework):
             redeem_tx = A.uncooperatively_close(B, settle2_tx, include_invalid=True, block_time=self.start_time + INVOICE_TIMEOUT)
 
             # wait for invoice to expire
-            self.nodes[0].setmocktime = (self.start_time + INVOICE_TIMEOUT)
+            self.nodes[0].setmocktime(self.start_time + INVOICE_TIMEOUT)
             self.nodes[0].generate(1)
 
             # A attempts to commits the redeem tx to complete the uncooperative close of the channel before the invoice has timed out
@@ -1853,7 +1873,7 @@ class SimulateL2Tests(BitcoinTestFramework):
             redeem_tx = A.uncooperatively_close(B, settle2_tx, include_invalid=False, block_time=self.start_time + INVOICE_TIMEOUT + BLOCK_TIME)
 
             # wait for invoice to expire
-            self.nodes[0].setmocktime = (self.start_time + INVOICE_TIMEOUT + BLOCK_TIME + 1)
+            self.nodes[0].setmocktime(self.start_time + INVOICE_TIMEOUT + BLOCK_TIME + 1)
             self.nodes[0].generate(10)
 
             # A commits the redeem tx to complete the uncooperative close of the channel and sweep the htlc
@@ -2007,7 +2027,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         txid = self.commit(update_tx)
 
         # mine the update tx into a new block, and advance blocks until settle tx can be spent
-        self.nodes[0].setmocktime = block_time
+        self.nodes[0].setmocktime(block_time)
         self.nodes[0].generate(CSV_DELAY + 10)
 
         # ----------------------------------------
@@ -2030,7 +2050,7 @@ class SimulateL2Tests(BitcoinTestFramework):
         redeem_tx = payment_sender.uncooperatively_close(payment_receiver, settle_tx, settled_only=False, include_invalid=False, block_time=block_time + INVOICE_TIMEOUT)
 
         # A commits the redeem tx to complete the uncooperative close of the channel
-        self.nodes[0].setmocktime = (block_time + INVOICE_TIMEOUT)
+        self.nodes[0].setmocktime(block_time + INVOICE_TIMEOUT)
         txid = self.commit(redeem_tx)
 
         return block_time
