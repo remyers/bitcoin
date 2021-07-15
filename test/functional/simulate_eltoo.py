@@ -233,7 +233,7 @@ def get_htlc_address(inner_pubkey, preimage_hash, claim_pubkey, expiry, refund_p
     return address
 
 
-def create_update_transaction(node, source_tx, dest_addr, state, amount_sat):
+def create_update_tx(node, source_tx, dest_addr, state, amount_sat):
     # UPDATE TX
     # nlocktime: CLTV_START_TIME + state
     # nsequence: 0
@@ -254,7 +254,7 @@ def create_update_transaction(node, source_tx, dest_addr, state, amount_sat):
     return update_tx
 
 
-def create_settle_transaction(node, source_tx, outputs):
+def create_settle_tx(node, source_tx, outputs):
     # SETTLE TX
     # nlocktime: CLTV_START_TIME + state + 1
     # nsequence: CSV_DELAY
@@ -280,7 +280,7 @@ def create_settle_transaction(node, source_tx, outputs):
 
     return settle_tx
 
-def create_htlc_claim_transaction(node, source_tx, dest_addr, htlc_index, amount_sat):
+def create_htlc_claim_tx(node, source_tx, dest_addr, htlc_index, amount_sat):
     # HTLC CLAIM TX
     # nlocktime: 0
     # nsequence: DEFAULT_NSEQUENCE
@@ -300,7 +300,7 @@ def create_htlc_claim_transaction(node, source_tx, dest_addr, htlc_index, amount
 
     return htlc_claim_tx
 
-def create_htlc_refund_transaction(node, source_tx, dest_addr, htlc_index, amount_sat, expiry):
+def create_htlc_refund_tx(node, source_tx, dest_addr, htlc_index, amount_sat, expiry):
     # HTLC REFUND TX
     # nlocktime: expiry
     # nsequence: DEFAULT_NSEQUENCE
@@ -321,7 +321,7 @@ def create_htlc_refund_transaction(node, source_tx, dest_addr, htlc_index, amoun
     return htlc_refund_tx
 
 
-def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT, debug=False):
+def sign_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT, debug=False):
     # Generate taptree for eltoo tx at state 'spend_state'
     pubkey, _ = compute_xonly_pubkey(privkey)
     update_script = get_update_tapscript(spent_state)
@@ -367,7 +367,7 @@ def spend_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_A
 
     return signature
 
-def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUT):
+def sign_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANYPREVOUT):
     # Generate taptree for eltoo tx at state n
     pubkey, _ = compute_xonly_pubkey(privkey)
     update_script = get_update_tapscript(spent_state)
@@ -401,7 +401,7 @@ def spend_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def spend_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+def sign_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
 
     preimage_hash = hash160(preimage)
     claim_pubkey, _ = compute_xonly_pubkey(claim_privkey)
@@ -439,7 +439,7 @@ def spend_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_priv
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def spend_htlc_refund_tx(tx, htlc_index, settle_tx, privkey, preimage_hash, claim_pubkey, expiry, refund_privkey, sighash_flag=SIGHASH_ANYPREVOUT):
+def sign_htlc_refund_tx(tx, htlc_index, settle_tx, privkey, preimage_hash, claim_pubkey, expiry, refund_privkey, sighash_flag=SIGHASH_ANYPREVOUT):
     refund_pubkey, _ = compute_xonly_pubkey(refund_privkey)
     refund_pubkey = b'\x01'+refund_pubkey
 
@@ -1662,32 +1662,32 @@ class SimulateL2Tests(BitcoinTestFramework):
         update0_tx = generate_and_send_coins(self.nodes[0], state0_address, CHANNEL_AMOUNT)
 
         # create and spend output at state 0 -> state 1
-        update1_tx = create_update_transaction(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
-        update1_sig = spend_update_tx(update1_tx, update0_tx, privkey_AB, spent_state=0)
+        update1_tx = create_update_tx(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
+        update1_sig = sign_update_tx(update1_tx, update0_tx, privkey_AB, spent_state=0)
 
         # create and spend output at state 0 -> settlement outputs at state 0 (scriptPubKey and amount must match update0_tx) 
-        settle0_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-1000), (htlc0_address, 1000)])
-        spend_settle_tx(settle0_tx, update0_tx, privkey_AB, spent_state=0)
+        settle0_tx = create_settle_tx(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-1000), (htlc0_address, 1000)])
+        sign_settle_tx(settle0_tx, update0_tx, privkey_AB, spent_state=0)
 
         # create and spend output at state 0 -> settlement outputs at state 1 (scriptPubKey and amount must match update1_tx)
-        settle1_apo_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
-        spend_settle_tx(settle1_apo_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUT)
+        settle1_apo_tx = create_settle_tx(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
+        sign_settle_tx(settle1_apo_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUT)
 
         # create and spend output at state 0 -> settlement outputs at state 1 that (only amount must match update1_tx)
-        settle1_apoas_tx = create_settle_transaction(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
-        spend_settle_tx(settle1_apoas_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT)
+        settle1_apoas_tx = create_settle_tx(self.nodes[0], source_tx=update0_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
+        sign_settle_tx(settle1_apoas_tx, update1_tx, privkey_AB, spent_state=0, sighash_flag=SIGHASH_ANYPREVOUTANYSCRIPT)
 
         # create and spend output at state 1 -> settlement outputs at state 1 (scriptPubKey and amount must match update1_tx)
-        settle1_tx = create_settle_transaction(self.nodes[0], source_tx=update1_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
-        spend_settle_tx(settle1_tx, update1_tx, privkey_AB, spent_state=1)
+        settle1_tx = create_settle_tx(self.nodes[0], source_tx=update1_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-2000), (toB_address, 1000), (htlc1_address, 1000)])
+        sign_settle_tx(settle1_tx, update1_tx, privkey_AB, spent_state=1)
 
         # create and spend output at state 1 -> state 2
-        update2_tx = create_update_transaction(self.nodes[0], source_tx=update1_tx, dest_addr=state2_address, state=2, amount_sat=CHANNEL_AMOUNT)
-        spend_update_tx(update2_tx, update1_tx, privkey_AB, spent_state=1, debug=True)
+        update2_tx = create_update_tx(self.nodes[0], source_tx=update1_tx, dest_addr=state2_address, state=2, amount_sat=CHANNEL_AMOUNT)
+        sign_update_tx(update2_tx, update1_tx, privkey_AB, spent_state=1, debug=True)
 
         # create and spend output at state 2 -> settlement outputs at state 2 (scriptPubKey and amount must match update2_tx)
-        settle2_tx = create_settle_transaction(self.nodes[0], source_tx=update1_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-3000), (toB_address, 2000), (htlc2_address, 1000)])
-        spend_settle_tx(settle2_tx, update2_tx, privkey_AB, spent_state=2)
+        settle2_tx = create_settle_tx(self.nodes[0], source_tx=update1_tx, outputs=[(toA_address, CHANNEL_AMOUNT-FEE_AMOUNT-3000), (toB_address, 2000), (htlc2_address, 1000)])
+        sign_settle_tx(settle2_tx, update2_tx, privkey_AB, spent_state=2)
 
         # add input for transaction fees and change output
         self.fund(tx=update1_tx, spend_tx=None, amount=FEE_AMOUNT)
@@ -1736,8 +1736,8 @@ class SimulateL2Tests(BitcoinTestFramework):
         update2_txid = self.commit(update2_tx)
 
         # create and spend output at state 2 -> state 1
-        update1b_tx = create_update_transaction(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
-        update1b_sig = spend_update_tx(update1b_tx, update0_tx, privkey_AB, spent_state=2)
+        update1b_tx = create_update_tx(self.nodes[0], source_tx=update0_tx, dest_addr=state1_address, state=1, amount_sat=CHANNEL_AMOUNT)
+        update1b_sig = sign_update_tx(update1b_tx, update0_tx, privkey_AB, spent_state=2)
         assert update1_sig == update1b_sig
 
         # rebind the prevout of eltoo inputs to the onchain update2_txid output before adding funding inputs (signed with SIGHASH_ALL)
@@ -1757,8 +1757,8 @@ class SimulateL2Tests(BitcoinTestFramework):
         settle2_txid = self.commit(settle2_tx)
 
         # peer A creates tx to claim inflight htlc output from uncooperative close using settle2 transaction
-        htlc_claim_tx = create_htlc_claim_transaction(self.nodes[0], settle2_tx, toA_address, 0, 1000)
-        spend_htlc_claim_tx(htlc_claim_tx, 0, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B)
+        htlc_claim_tx = create_htlc_claim_tx(self.nodes[0], settle2_tx, toA_address, 0, 1000)
+        sign_htlc_claim_tx(htlc_claim_tx, 0, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B)
         self.fund(tx=htlc_claim_tx, spend_tx=None, amount=FEE_AMOUNT)
 
         # succeed: test that htlc claim tx is valid
@@ -1766,8 +1766,8 @@ class SimulateL2Tests(BitcoinTestFramework):
         assert test_transaction(self.nodes[0], htlc_claim_tx)
 
         # peer B creates tx to refund inflight htlc output from uncooperative close using settle2 transaction
-        htlc_refund_tx = create_htlc_refund_transaction(self.nodes[0], settle2_tx, toB_address, 0, 1000, expiry)
-        spend_htlc_refund_tx(htlc_refund_tx, 0, settle2_tx, privkey_AB, preimage2_hash, pubkey_A, expiry, privkey_B)
+        htlc_refund_tx = create_htlc_refund_tx(self.nodes[0], settle2_tx, toB_address, 0, 1000, expiry)
+        sign_htlc_refund_tx(htlc_refund_tx, 0, settle2_tx, privkey_AB, preimage2_hash, pubkey_A, expiry, privkey_B)
         self.fund(tx=htlc_refund_tx, spend_tx=None, amount=FEE_AMOUNT)
 
         # fail: test that htlc refund tx is valid
