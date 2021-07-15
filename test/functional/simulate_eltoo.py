@@ -63,6 +63,7 @@ from test_framework.script import (
     SIGHASH_DEFAULT,
     SIGHASH_ALL,
     SIGHASH_SINGLE,
+    SIGHASH_ANYONECANPAY,
     SIGHASH_ANYPREVOUT,
     SIGHASH_ANYPREVOUTANYSCRIPT,
     LegacySignatureHash,
@@ -284,7 +285,7 @@ def create_htlc_claim_tx(node, source_tx, dest_addr, htlc_index, amount_sat):
     # HTLC CLAIM TX
     # nlocktime: 0
     # nsequence: DEFAULT_NSEQUENCE
-    # sighash=SINGLE | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the settle leaf is commited to in the root hash used as the scriptPubKey)
+    # sighash=SINGLE | ANYONECANPAY
     htlc_claim_tx = CTransaction()
     htlc_claim_tx.nVersion = 2
     htlc_claim_tx.nLockTime = 0
@@ -304,7 +305,7 @@ def create_htlc_refund_tx(node, source_tx, dest_addr, htlc_index, amount_sat, ex
     # HTLC REFUND TX
     # nlocktime: expiry
     # nsequence: DEFAULT_NSEQUENCE
-    # sighash=SINGLE | ANYPREVOUT (using ANYPREVOUT commits to a specific state because 'n' in the settle leaf is commited to in the root hash used as the scriptPubKey)
+    # sighash=SINGLE | ANYONECANPAY
     htlc_refund_tx = CTransaction()
     htlc_refund_tx.nVersion = 2
     htlc_refund_tx.nLockTime = expiry
@@ -401,14 +402,13 @@ def sign_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANY
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def sign_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYPREVOUT):
+def sign_htlc_claim_tx(tx, htlc_index, settle_tx, inner_pubkey, preimage, claim_privkey, expiry, refund_pubkey, sighash_flag=SIGHASH_ANYONECANPAY):
 
     preimage_hash = hash160(preimage)
     claim_pubkey, _ = compute_xonly_pubkey(claim_privkey)
     claim_pubkey = b'\x01'+claim_pubkey
 
     # Generate taptree for htlc tx
-    inner_pubkey, _ = compute_xonly_pubkey(privkey)
     htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
     htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
     htlc_taptree = taproot_construct(inner_pubkey, [
@@ -439,12 +439,11 @@ def sign_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_privk
     tx.wit.vtxinwit.append(CTxInWitness())
     tx.wit.vtxinwit[0].scriptWitness.stack = inputs + witness_elements
 
-def sign_htlc_refund_tx(tx, htlc_index, settle_tx, privkey, preimage_hash, claim_pubkey, expiry, refund_privkey, sighash_flag=SIGHASH_ANYPREVOUT):
+def sign_htlc_refund_tx(tx, htlc_index, settle_tx, inner_pubkey, preimage_hash, claim_pubkey, expiry, refund_privkey, sighash_flag=SIGHASH_ANYONECANPAY):
     refund_pubkey, _ = compute_xonly_pubkey(refund_privkey)
     refund_pubkey = b'\x01'+refund_pubkey
 
     # Generate taptree for htlc tx
-    inner_pubkey, _ = compute_xonly_pubkey(privkey)
     htlc_claim_script = get_htlc_claim_tapscript(preimage_hash, claim_pubkey)
     htlc_refund_script = get_htlc_refund_tapscript(expiry, refund_pubkey)
     htlc_taptree = taproot_construct(inner_pubkey, [
@@ -1758,7 +1757,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # peer A creates tx to claim inflight htlc output from uncooperative close using settle2 transaction
         htlc_claim_tx = create_htlc_claim_tx(self.nodes[0], settle2_tx, toA_address, 0, 1000)
-        sign_htlc_claim_tx(htlc_claim_tx, 0, settle2_tx, privkey_AB, secret2, privkey_A, expiry, pubkey_B)
+        sign_htlc_claim_tx(htlc_claim_tx, 0, settle2_tx, pubkey_AB, secret2, privkey_A, expiry, pubkey_B)
         self.fund(tx=htlc_claim_tx, spend_tx=None, amount=FEE_AMOUNT)
 
         # succeed: test that htlc claim tx is valid
@@ -1767,7 +1766,7 @@ class SimulateL2Tests(BitcoinTestFramework):
 
         # peer B creates tx to refund inflight htlc output from uncooperative close using settle2 transaction
         htlc_refund_tx = create_htlc_refund_tx(self.nodes[0], settle2_tx, toB_address, 0, 1000, expiry)
-        sign_htlc_refund_tx(htlc_refund_tx, 0, settle2_tx, privkey_AB, preimage2_hash, pubkey_A, expiry, privkey_B)
+        sign_htlc_refund_tx(htlc_refund_tx, 0, settle2_tx, pubkey_AB, preimage2_hash, pubkey_A, expiry, privkey_B)
         self.fund(tx=htlc_refund_tx, spend_tx=None, amount=FEE_AMOUNT)
 
         # fail: test that htlc refund tx is valid
