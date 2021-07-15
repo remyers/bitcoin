@@ -353,7 +353,7 @@ def sign_update_tx(tx, funding_tx, privkey, spent_state, sighash_flag=SIGHASH_AN
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+    signature = sign_schnorr(privkey, sighash) + bytes([SIGHASH_SINGLE | sighash_flag])
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     update_leaf = eltoo_taptree.leaves["update"]
@@ -389,7 +389,7 @@ def sign_settle_tx(tx, update_tx, privkey, spent_state, sighash_flag=SIGHASH_ANY
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(privkey, sighash) + chr(sighash_flag).encode('latin-1')
+    signature = sign_schnorr(privkey, sighash) + bytes([sighash_flag])
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     settle_leaf = eltoo_taptree.leaves["settle"]
@@ -427,7 +427,7 @@ def sign_htlc_claim_tx(tx, htlc_index, settle_tx, privkey, preimage, claim_privk
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(claim_privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+    signature = sign_schnorr(claim_privkey, sighash) + bytes([SIGHASH_SINGLE | sighash_flag])
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     htlc_claim_leaf = htlc_taptree.leaves["htlc_claim"]
@@ -463,7 +463,7 @@ def sign_htlc_refund_tx(tx, htlc_index, settle_tx, privkey, preimage_hash, claim
     )
 
     # Sign with internal private key
-    signature = sign_schnorr(refund_privkey, sighash) + chr(SIGHASH_SINGLE | sighash_flag).encode('latin-1')
+    signature = sign_schnorr(refund_privkey, sighash) + bytes([SIGHASH_SINGLE | sighash_flag])
 
     # Control block created from leaf version and merkle branch information and common inner pubkey and it's negative flag
     htlc_refund_leaf = htlc_taptree.leaves["htlc_refund"]
@@ -605,7 +605,7 @@ class UpdateTx(CTransaction):
         self.vin.append(CTxIn(outpoint=COutPoint(prevscript, 0), scriptSig=b"", nSequence=DEFAULT_NSEQUENCE))
 
         tx_hash = SegwitVersion1SignatureHash(prevscript, self, 0, SIGHASH_ANYPREVOUT | SIGHASH_SINGLE, CHANNEL_AMOUNT)
-        signature = keys.update_key.sign_ecdsa(tx_hash) + chr(SIGHASH_ANYPREVOUT | SIGHASH_SINGLE).encode('latin-1')
+        signature = keys.update_key.sign_ecdsa(tx_hash) + bytes([SIGHASH_ANYPREVOUT | SIGHASH_SINGLE])
 
         # remove dummy vin
         self.vin.pop()
@@ -713,7 +713,7 @@ class SettleTx(CTransaction):
 
         tx_hash = SegwitVersion1SignatureHash(prevscript, self, 0, SIGHASH_ANYPREVOUT | SIGHASH_SINGLE, CHANNEL_AMOUNT)
 
-        signature = keys.settle_key.sign_ecdsa(tx_hash) + chr(SIGHASH_ANYPREVOUT | SIGHASH_SINGLE).encode('latin-1')
+        signature = keys.settle_key.sign_ecdsa(tx_hash) + bytes([SIGHASH_ANYPREVOUT | SIGHASH_SINGLE])
 
         # remove dummy vin
         self.vin.pop()
@@ -833,7 +833,7 @@ class RedeemTx(CTransaction):
 
         privkey = keys.payment_key
         tx_hash = SegwitVersion1SignatureHash(witness_program, self, input_index, SIGHASH_SINGLE, amount)
-        signature = privkey.sign_ecdsa(tx_hash) + chr(SIGHASH_SINGLE).encode('latin-1')
+        signature = privkey.sign_ecdsa(tx_hash) + bytes([SIGHASH_SINGLE])
 
         pk = ECPubKey()
         pk.set(privkey.get_pubkey().get_bytes())
@@ -893,7 +893,7 @@ class RedeemTx(CTransaction):
                     amount = settled_amounts[amount_index]
                     # sig = self.Sign(keys=keys, htlc_index=-1, input_index=input_index)
                     tx_hash = SegwitVersion1SignatureHash(witness_program, self, input_index, SIGHASH_SINGLE, amount)
-                    sig = privkey.sign_ecdsa(tx_hash) + chr(SIGHASH_SINGLE).encode('latin-1')
+                    sig = privkey.sign_ecdsa(tx_hash) + bytes([SIGHASH_SINGLE])
                     self.wit.vtxinwit.append(CTxInWitness())
                     self.wit.vtxinwit[-1].scriptWitness = CScriptWitness()
                     self.wit.vtxinwit[-1].scriptWitness.stack = [sig, pubkey]
@@ -920,7 +920,7 @@ class RedeemTx(CTransaction):
                     amount = htlc.amount
                     # sig = self.Sign(keys=keys, htlc_index=htlc_index, input_index=input_index)
                     tx_hash = SegwitVersion1SignatureHash(witness_program, self, input_index, SIGHASH_SINGLE, amount)
-                    sig = privkey.sign_ecdsa(tx_hash) + chr(SIGHASH_SINGLE).encode('latin-1')
+                    sig = privkey.sign_ecdsa(tx_hash) + bytes([SIGHASH_SINGLE])
                     self.wit.vtxinwit.append(CTxInWitness())
                     if self.is_funder:
                         preimage = None
@@ -999,7 +999,7 @@ class CloseTx(CTransaction):
         # spending from a SetupTx (first UpdateTx) should not use the NOINPUT sighash 
         witness_program = get_eltoo_update_script(setup_tx.state, setup_tx.witness, setup_tx.other_witness)
         tx_hash = SegwitVersion1SignatureHash(witness_program, self, 0, SIGHASH_SINGLE, CHANNEL_AMOUNT)
-        signature = keys.update_key.sign_ecdsa(tx_hash) + chr(SIGHASH_SINGLE).encode('latin-1')
+        signature = keys.update_key.sign_ecdsa(tx_hash) + bytes([SIGHASH_SINGLE])
 
         if self.is_channel_funder(keys):
             self.payment_channel.witness.update_sig = signature
