@@ -21,6 +21,7 @@ from test_framework.script import (
     OP_CHECKMULTISIGVERIFY,
     OP_CHECKSEQUENCEVERIFY,
     OP_CHECKSIG,
+    OP_CHECKSIGVERIFY,
     OP_DROP,
     OP_DUP,
     OP_ELSE,
@@ -42,22 +43,20 @@ def int_to_bytes(x) -> bytes:
 def get_update_tapscript(state):
     # eltoo Update output
     return CScript([
-        CScriptNum(CLTV_START_TIME + state),    # check state before signature
-        OP_CHECKLOCKTIMEVERIFY,                 # does nothing if nLockTime of tx is a later state
-        OP_DROP,                                # remove state value from stack
         OP_1,                                   # single byte 0x1 means the BIP-118 public key == taproot internal key
-        OP_CHECKSIG
+        OP_CHECKSIGVERIFY,
+        CScriptNum(CLTV_START_TIME + state),    # check state before signature
+        OP_CHECKLOCKTIMEVERIFY                  # does nothing if nLockTime of tx is a later state
     ])
 
 
 def get_settle_tapscript():
     # eltoo Settle output
     return CScript([
-        CScriptNum(CSV_DELAY),                  # check csv delay before signature
-        OP_CHECKSEQUENCEVERIFY,                 # does nothing if nSequence of tx is later than (blocks) delay
-        OP_DROP,                                # remove delay value from stack
         OP_1,                                   # single byte 0x1 means the BIP-118 public key == taproot internal key
-        OP_CHECKSIG
+        OP_CHECKSIGVERIFY,
+        CScriptNum(CSV_DELAY),                  # check csv delay before signature
+        OP_CHECKSEQUENCEVERIFY                  # does nothing if nSequence of tx is later than (blocks) delay
     ])
 
 
@@ -67,7 +66,7 @@ def get_htlc_claim_tapscript(preimage_hash, pubkey):
         OP_HASH160,                             # check preimage before signature
         preimage_hash,
         OP_EQUALVERIFY,
-        pubkey,                            # pubkey of party claiming payment
+        pubkey,                                 # pubkey of party claiming payment
         OP_CHECKSIG
     ])
 
@@ -75,11 +74,10 @@ def get_htlc_claim_tapscript(preimage_hash, pubkey):
 def get_htlc_refund_tapscript(expiry, pubkey):
     # HTLC Refund output (after expiry)
     return CScript([
+        pubkey,                                 # pubkey of party claiming refund
+        OP_CHECKSIGVERIFY,
         CScriptNum(expiry),                     # check htlc expiry before signature
-        OP_CHECKLOCKTIMEVERIFY,                 # does not change stack if nLockTime of tx is a later time
-        OP_DROP,                                # remove expiry value from stack
-        pubkey,                            # pubkey of party claiming refund
-        OP_CHECKSIG
+        OP_CHECKLOCKTIMEVERIFY                  # does not change stack if nLockTime of tx is a later time
     ])
 
 
