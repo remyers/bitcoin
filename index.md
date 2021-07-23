@@ -1,37 +1,33 @@
-## Welcome to GitHub Pages
+# Anyprevout and eltoo
 
-You can use the [editor on GitHub](https://github.com/remyers/bitcoin/edit/gh-pages/index.md) to maintain and preview the content for your website in Markdown files.
+This site is dedicated to efforts to further the specification, implementation and testing of two related projects: [BIP-118](https://github.com/bitcoin/bips/blob/master/bip-0118.mediawiki) (Anyprevout) and the [eltoo](https://blockstream.com/eltoo.pdf) Lightning protocol.
 
-Whenever you commit to this repository, GitHub Pages will run [Jekyll](https://jekyllrb.com/) to rebuild the pages in your site, from the content in your Markdown files.
+## TODO:
+ - [X] BIP-118: Basic unit tests, [legacy](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L247) and [taproot](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L404)
+- [ ] Review and comment on BIP-118
+- [X] eltoo: Basic transaction tests, [simulate_eltoo.py: test_tapscript_eltoo()](https://github.com/remyers/bitcoin/blob/eltoo-anyprevout/test/functional/simulate_eltoo.py#L1623]
+- [ ] Website
+- [ ] Blog post about basic transaction tests
+- [ ] eltoo: PTLCs transaction tests
+- [ ] eltoo: Layered Commitments transaction tests 
+- [ ] eltoo: Update simulation code to use anyprevout
+- [ ] eltoo: add PTLCs to simulation
+- [ ] eltoo: add Layered Commitments to simulation
+- [ ] eltoo: add Channel Factories to simulation
 
-### Markdown
+## Anyprevout
 
-Markdown is a lightweight and easy-to-use syntax for styling your writing. It includes conventions for
+## eltoo
 
-```markdown
-Syntax highlighted code block
+### SIGHASH_NOINPUT eltoo
+* (eltoo simulation)[https://github.com/remyers/bitcoin/blob/anyprevout/test/functional/simulate_eltoo.py]
 
-# Header 1
-## Header 2
-### Header 3
+### Taproot eltoo
+* [sketch by AJ Towns](https://lists.linuxfoundation.org/pipermail/lightning-dev/2019-May/001996.html)
 
-- Bulleted
-- List
+### Taproot PTLCs
 
-1. Numbered
-2. List
+### Layered Commitments
 
-**Bold** and _Italic_ and `Code` text
+### Channel Factories
 
-[Link](url) and ![Image](src)
-```
-
-For more details see [GitHub Flavored Markdown](https://guides.github.com/features/mastering-markdown/).
-
-### Jekyll Themes
-
-Your Pages site will use the layout and styles from the Jekyll theme you have selected in your [repository settings](https://github.com/remyers/bitcoin/settings/pages). The name of this theme is saved in the Jekyll `_config.yml` configuration file.
-
-### Support or Contact
-
-Having trouble with Pages? Check out our [documentation](https://docs.github.com/categories/github-pages-basics/) or [contact support](https://support.github.com/contact) and we’ll help you sort it out.
