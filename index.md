@@ -19,8 +19,8 @@ This site is dedicated to efforts to further the specification, implementation a
 
 ## eltoo
 
-### SIGHASH_NOINPUT eltoo
-* [eltoo simulation](https://github.com/remyers/bitcoin/blob/anyprevout/test/functional/simulate_eltoo.py)
+### Segwit
+* [functional simulation](https://github.com/remyers/bitcoin/blob/anyprevout/test/functional/simulate_eltoo.py)
 
 ### Taproot eltoo
 * [sketch by AJ Towns](https://lists.linuxfoundation.org/pipermail/lightning-dev/2019-May/001996.html)
