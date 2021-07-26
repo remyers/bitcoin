@@ -18,13 +18,13 @@ I have compiled below a list of tasks and related notes that might be helpful fo
 
 ### Signet
 
-Can signet miners create a single signature and prototype transaction that that can spend any coinbase output using APOAS as a type of faucet?
+Faucet idea: can signet miners create a single signature and prototype transaction that can spend any coinbase output using APOAS? As long as any change goes back to the same address then the signature can be used again by others.
 
 # eltoo
 
 ## Tasks:
  - [X] [eltoo](https://blockstream.com/eltoo.pdf): Basic transaction tests, [simulate_eltoo.py: test_tapscript_eltoo()](https://github.com/remyers/bitcoin/blob/eltoo-anyprevout/test/functional/simulate_eltoo.py#L1623)
- - [ ] Blog post about basic transaction tests
+ - [ ] [Blog post](https://bitcoin.yakshaver.org/2021/07/26/first.html) about basic transaction tests
  - [ ] [PTLCs](https://suredbits.com/schnorr-applications-scriptless-scripts) transaction tests
  - [ ] [Layered Commitments](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-January/002448.html) transaction tests
  - [ ] [Channel Factories](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6124062/) transaction tests
