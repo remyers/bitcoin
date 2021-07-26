@@ -1,9 +1,8 @@
-This site is dedicated to efforts to further the specification, implementation and testing of two related projects: [BIP-118](https://github.com/bitcoin/bips/blob/master/bip-0118.mediawiki) (Anyprevout) and the [eltoo](https://blockstream.com/eltoo.pdf) Lightning protocol.
 
-## TODO:
+# TODO:
  - [X] APO: Basic unit tests, [legacy](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L247) and [taproot](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L404)
- - [ ] APO: Review and comment on BIP-118 draft
- - [X] eltoo: Basic transaction tests, [simulate_eltoo.py: test_tapscript_eltoo()](https://github.com/remyers/bitcoin/blob/eltoo-anyprevout/test/functional/simulate_eltoo.py#L1623)
+ - [ ] APO: Review and comment on [BIP-118](https://github.com/bitcoin/bips/blob/master/bip-0118.mediawiki)
+ - [X] [eltoo](https://blockstream.com/eltoo.pdf): Basic transaction tests, [simulate_eltoo.py: test_tapscript_eltoo()](https://github.com/remyers/bitcoin/blob/eltoo-anyprevout/test/functional/simulate_eltoo.py#L1623)
  - [ ] Website
  - [ ] Blog post about basic transaction tests
  - [ ] eltoo: [PTLCs](https://suredbits.com/schnorr-applications-scriptless-scripts) transaction tests
@@ -17,6 +16,7 @@ This site is dedicated to efforts to further the specification, implementation a
  - [ ] eltoo: [Channel Factories](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6124062/) transaction tests
  - [ ] eltoo: add MuSig2 to simulation
 
+# Notes:
 ## Anyprevout
 
 ## eltoo
