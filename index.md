@@ -1,36 +1,50 @@
 ---
-title: "Bitcoin"
+title: "TR-eltoo"
 ---
 
-# TODO:
- - [X] APO: Basic unit tests, [legacy](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L247) and [taproot](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L404)
- - [ ] APO: Review and comment on [BIP-118](https://github.com/bitcoin/bips/blob/master/bip-0118.mediawiki)
+I have compiled below a list of tasks and related notes that might be helpful for anyone that wants to learn more about the status and implementation details of BIP-118 (Anyprevout) and eltoo. Please get in touch if you have any questions or can help work on one of these tasks. Open an issue or PR if you think of additional tasks, notes or other changes for this page.
+
+# Anyprevout
+
+## Tasks:
+ - [X] Basic unit tests, [legacy](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L247) and [taproot](https://github.com/ajtowns/bitcoin/blob/57cb1249a20d2e09952040693eb62d04fe1f1399/src/test/sighash_tests.cpp#L404)
+ - [ ] Review and comment on [BIP-118](https://github.com/bitcoin/bips/blob/master/bip-0118.mediawiki)
+ - [ ] run a signet node
+ - [ ] run a signet faucet
+
+## Notes:
+
+### BIP
+
+### Signet
+
+Can signet miners create a single signature and prototype transaction that that can spend any coinbase output using APOAS as a type of faucet?
+
+# eltoo
+
+## Tasks:
  - [X] [eltoo](https://blockstream.com/eltoo.pdf): Basic transaction tests, [simulate_eltoo.py: test_tapscript_eltoo()](https://github.com/remyers/bitcoin/blob/eltoo-anyprevout/test/functional/simulate_eltoo.py#L1623)
- - [ ] Website
  - [ ] Blog post about basic transaction tests
- - [ ] eltoo: [PTLCs](https://suredbits.com/schnorr-applications-scriptless-scripts) transaction tests
- - [ ] eltoo: [Layered Commitments](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-January/002448.html) transaction tests
- - [ ] eltoo: [Channel Factories](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6124062/) transaction tests
- - [ ] eltoo: add anyprevout transactions to simulation
- - [ ] eltoo: add PTLCs to simulation
- - [ ] eltoo: add Layered Commitments to simulation
- - [ ] eltoo: add Channel Factories to simulation
- - [ ] eltoo: optimize fees in simulation (eg. [fee bumping](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2021-May/019031.html), GROUP sighash)
- - [ ] eltoo: [Channel Factories](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6124062/) transaction tests
- - [ ] eltoo: add MuSig2 to simulation
+ - [ ] [PTLCs](https://suredbits.com/schnorr-applications-scriptless-scripts) transaction tests
+ - [ ] [Layered Commitments](https://lists.linuxfoundation.org/pipermail/lightning-dev/2020-January/002448.html) transaction tests
+ - [ ] [Channel Factories](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6124062/) transaction tests
+ - [ ] update simulation with APO transactions
+ - [ ] add PTLCs to simulation
+ - [ ] add Layered Commitments to simulation
+ - [ ] add Channel Factories to simulation
+ - [ ] add optimize fees to simulation (eg. [fee bumping](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2021-May/019031.html), GROUP sighash)
+ - [ ] [Channel Factories](https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6124062/) transaction tests
+ - [ ] add MuSig2 to simulation
 
-# Notes:
-## Anyprevout
+## Notes:
 
-## eltoo
-
-### Segwit
+### Segwit eltoo
 * [functional simulation](https://github.com/remyers/bitcoin/blob/anyprevout/test/functional/simulate_eltoo.py)
 
 ### Taproot eltoo
 * [sketch by AJ Towns](https://lists.linuxfoundation.org/pipermail/lightning-dev/2019-May/001996.html)
 
-### Taproot PTLCs
+### PTLCs
 
 ### Layered Commitments
 
