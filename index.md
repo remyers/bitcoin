@@ -1,5 +1,3 @@
-# Anyprevout and eltoo
-
 This site is dedicated to efforts to further the specification, implementation and testing of two related projects: [BIP-118](https://github.com/bitcoin/bips/blob/master/bip-0118.mediawiki) (Anyprevout) and the [eltoo](https://blockstream.com/eltoo.pdf) Lightning protocol.
 
 ## TODO:
@@ -34,4 +32,3 @@ This site is dedicated to efforts to further the specification, implementation a
 ### Layered Commitments
 
 ### Channel Factories
-
