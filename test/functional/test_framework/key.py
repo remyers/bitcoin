@@ -496,6 +496,99 @@ def sign_schnorr(key, msg, aux=None, flip_p=False, flip_r=False):
     e = int.from_bytes(TaggedHash("BIP0340/challenge", R[0].to_bytes(32, 'big') + P[0].to_bytes(32, 'big') + msg), 'big') % SECP256K1_ORDER
     return R[0].to_bytes(32, 'big') + ((k + e * sec) % SECP256K1_ORDER).to_bytes(32, 'big')
 
+def adaptor_challenge_schnorr(X: bytes, R: bytes, message_hash: bytes) -> int:
+    # TODO: use right one to match test vectors
+    # h = tagged_hash("Schnorr challenge", X.to_bytes() + R.to_bytes() + message_hash)
+    # return int_from_bytes(h) % n
+    
+    assert len(message_hash) == 32
+    assert len(X) == 32
+    assert len(R) == 32
+    h = TaggedHash("Schnorr challenge", R + X + message_hash)
+    
+    return int.from_bytes(h, 'big') % SECP256K1_ORDER
+
+def adaptor_nonce_schnorr(x: bytes, Y: bytes, message_hash: bytes) -> int:
+    # TODO: use right one to match test vectors
+    #h = tagged_hash("Schnorr ADAPTOR", bytes_from_int(x) + Y.to_bytes() + message_hash)
+    #return int_from_bytes(h) % n
+
+    assert len(message_hash) == 32
+    assert len(x) == 32
+    assert len(Y) == 32
+
+    h = TaggedHash("Schnorr nonce", x + Y + message_hash)
+    return int.from_bytes(h, 'big') % SECP256K1_ORDER
+
+def adaptor_encrypt_schnorr(x: bytes, y: bytes, message_hash: bytes):
+    # Y = y * G
+    # k = schnorr_nonce(x, Y, message_hash)
+    # R = k * G
+    # X = x * G
+    # e = schnorr_challenge(X, R, message_hash)
+    # s_a = (k + y + e * x) % n
+    # return s_a, R   
+
+    Y, neg_y = compute_xonly_pubkey(y)
+    k = adaptor_nonce_schnorr(x, Y, message_hash)
+    R, neg_r = compute_xonly_pubkey(k.to_bytes(32, 'big'))
+    X, neg_x = compute_xonly_pubkey(x)
+    e = adaptor_challenge_schnorr(X, R, message_hash)
+    s_a = (k + int.from_bytes(y, 'big') + e * int.from_bytes(x, 'big')) % SECP256K1_ORDER
+    return R + s_a.to_bytes(32,'big')
+
+def adaptor_verify_schnorr(X: bytes, Y: bytes, message_hash: bytes, a: bytes) -> bool:
+    # s_a, R = a
+    # e = challenge_schnorr(X, R, message_hash)
+    # return s_a * G == R + Y + e * X
+
+    assert len(X) == 32
+    assert len(Y) == 32
+    assert len(message_hash) == 32
+    assert len(a) == 64
+
+    x_coord = int.from_bytes(X, 'big')
+    if x_coord == 0 or x_coord >= SECP256K1_FIELD_SIZE:
+        return False
+    P_X = SECP256K1.lift_x(x_coord)
+    if P_X is None:
+        return False
+    x_coord = int.from_bytes(Y, 'big')
+    if x_coord == 0 or x_coord >= SECP256K1_FIELD_SIZE:
+        return False
+    P_Y = SECP256K1.lift_x(x_coord)
+    if P_Y is None:
+        return False    
+    r = int.from_bytes(a[0:32], 'big')
+    if r >= SECP256K1_FIELD_SIZE:
+        return False
+    s_a = int.from_bytes(a[32:64], 'big')
+    if s_a >= SECP256K1_ORDER:
+        return False
+    e = adaptor_challenge_schnorr(X, r.to_bytes(32,'big'), message_hash)
+    R = SECP256K1.mul([(SECP256K1_G, s_a), (P_X, SECP256K1_ORDER - e)])
+    P1 = SECP256K1.mul([(SECP256K1_G, s_a)])
+    P2 = SECP256K1.add(SECP256K1.add(R,P_Y),SECP256K1.mul([(P_X, e)]))
+    return P1 == P2
+
+def adaptor_decrypt_schnorr(a, y: int):
+    # s_a, R = a
+    # return (s_a - y) % n, R
+
+    s_a, R = a
+    return (s_a - y) % SECP256K1_ORDER, R
+
+def adaptor_recover_schnorr(a, sig) -> int:
+    # s_a, R_a = a
+    # s, R = sig
+    # assert R_a == R
+    # return (s_a - s) % n
+
+    s_a, R_a = a
+    s, R = sig
+    assert R_a == R
+    return (s_a - s) % SECP256K1_ORDER
+
 class TestFrameworkKey(unittest.TestCase):
     def test_schnorr(self):
         """Test the Python Schnorr implementation."""
