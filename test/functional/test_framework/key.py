@@ -496,6 +496,121 @@ def sign_schnorr(key, msg, aux=None, flip_p=False, flip_r=False):
     e = int.from_bytes(TaggedHash("BIP0340/challenge", R[0].to_bytes(32, 'big') + P[0].to_bytes(32, 'big') + msg), 'big') % SECP256K1_ORDER
     return R[0].to_bytes(32, 'big') + ((k + e * sec) % SECP256K1_ORDER).to_bytes(32, 'big')
 
+# port Rust schnorr_fun-0.6.2 x-only pubkey adaptor signature scheme to python 
+# see https://docs.rs/schnorr_fun/0.6.2/schnorr_fun/adaptor/index.html
+
+def schnorr_nonce(x: bytes, X: bytes, Y: bytes, msg: bytes) -> int:
+    kp = int.from_bytes(TaggedHash("ADAPTOR/nonce", x + X + Y + msg), 'big') % SECP256K1_ORDER
+    return kp
+
+def schnorr_challenge(X: bytes, R: bytes, msg: bytes) -> int:
+    # TODO: use right one to match test vectors
+    c = int.from_bytes(TaggedHash("BIP0340/challenge", R + X + msg),'big') % SECP256K1_ORDER
+    return c 
+
+def encryption_key_for(decryption_key: int):
+    return SECP256K1.mul([(SECP256K1_G, decryption_key)])
+
+# signing_key: x (privkey, scalar), verification key: X (x-only pubkey, point), 
+# encryption_key: Y (point)
+def schnorr_adaptor_encrypt(x: bytes, X: bytes, Y: bytes, msg: bytes) -> bytes:
+    # r = schnorr_nonce(x, X, Y, message_hash)
+    # R = k * G + Y
+    # X = x * G
+    # c = schnorr_challenge(X, R, msg)
+    # s_a = (k + c * x) % n
+    # return s_a, R
+
+    x_int = int.from_bytes(x, 'big')
+    P = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, x_int)]))
+    assert P[0].to_bytes(32,'big') == X
+    x_int = SECP256K1_ORDER - x_int if not SECP256K1.has_even_y(P) else x_int
+
+    r = schnorr_nonce(x_int.to_bytes(32,'big'), X, Y[0].to_bytes(32,'big'), msg)
+    
+    # R_hat = r * G is sampled pseudorandomly for every Y which means R_hat + Y is also
+    # be pseudoranodm and therefore will not be zero.
+    # NOTE: Crucially we add Y to the nonce derivation to ensure this is true.
+    # let R = g!(r * { self.G() } + Y)
+    R = SECP256K1.affine(SECP256K1.mul([(SECP256K1_G, r), (Y, 1)]))
+
+    # can correct r, but can't correct decryption key (y)
+    # so store "needs_negation" to say whether decryptor needs to negate their key before decrypting
+    # let (R, needs_negation) = R.into_point_with_even_y()
+    needs_negation = not SECP256K1.has_even_y(R)
+    r = SECP256K1_ORDER - r if needs_negation else r
+
+    # let c = self.challenge(&R.to_xonly(), X, message)
+    c = schnorr_challenge(X, R[0].to_bytes(32, 'big'), msg)
+
+    # let s_hat = s!(r + c * x).mark::<Public>()
+    s_a = (r + c * x_int) % SECP256K1_ORDER
+
+    # EncryptedSignature
+    return R[0].to_bytes(32, 'big') + s_a.to_bytes(32, 'big'), needs_negation
+
+# verification_key: X (x-only pubkey, point), encryption_key: Y (point)
+# adaptor signature: a
+def schnorr_adaptor_verify(X: bytes, Y: bytes, msg: bytes, a: bytes, needs_negation: bool) -> bool:
+    # R, s_a = a
+    # c = schnorr_challenge(X, R, msg)
+    # return R + Y == s_a * G - c * X
+
+    R, s_a = a[0:32], a[32:64]
+
+    # needs_negation => R_hat = R + Y
+    # !needs_negation => R_hat = R - Y
+    # let R_hat = g!(R + { Y.conditional_negate(!needs_negation) });
+    if not needs_negation:
+        R_hat = SECP256K1.mul([(SECP256K1.lift_x(int.from_bytes(R, 'big')),1), (SECP256K1.negate(Y), 1)])
+    else:
+        R_hat = SECP256K1.mul([(SECP256K1.lift_x(int.from_bytes(R, 'big')),1), (Y,1)])
+
+    # R_hat == g!(s_hat * { self.G() } - c * X) note: s_hat renamed s_a
+    c = schnorr_challenge(X, R, msg)
+    P = SECP256K1.mul([(SECP256K1_G, int.from_bytes(s_a, 'big')), (SECP256K1.lift_x(int.from_bytes(X, 'big')), SECP256K1_ORDER - c)])
+
+    if (SECP256K1.affine(R_hat) != SECP256K1.affine(P)):
+        return False
+    return True
+
+# decryption_key: y (privkey, scalar), adaptor signature: a
+def schnorr_adaptor_decrypt(y: int, a: bytes, needs_negation: bool) -> bytes:
+    # s_a, R = a
+    # return (s_a - y) % n, R
+    R, s_a = a[0:32], a[32:64]
+
+    # y.conditional_negate(needs_negation);
+    y_int = SECP256K1_ORDER - int.from_bytes(y, 'big') if needs_negation else int.from_bytes(y, 'big')
+    
+    # let s = s!(s_hat + y).mark::<Public>()
+    s = (int.from_bytes(s_a, 'big') + y_int) % SECP256K1_ORDER
+
+    return  R + s.to_bytes(32, 'big')
+
+# encryption_key: Y (point), adaptor signature: a, schnorr signature: sig
+def schnorr_adaptor_recover(Y: bytes, a: bytes, sig: bytes, needs_negation: bool) -> int:
+    # s_a, R_a = a
+    # s, R = sig
+    # assert R_a == R
+    # return (s_a - s) % n
+    R_a, s_a = a[0:32], a[32:64]
+    R_sig, s = sig[0:32], sig[32:64]
+    assert R_sig == R_a
+
+    # let mut y = s!(s - s_hat)
+    y = (int.from_bytes(s, 'big') - int.from_bytes(s_a, 'big')) % SECP256K1_ORDER
+
+    # y.conditional_negate(*needs_negation)
+    y = SECP256K1_ORDER - y if needs_negation else y
+
+    # let implied_encryption_key = g!(y * { self.G() })
+    implied_encryption_key = SECP256K1.mul([(SECP256K1_G, y)])
+    assert implied_encryption_key == Y
+
+    # unreachable - encryption_key is NonZero and y*G equals it
+    return y if y != 0 else None
+
 class TestFrameworkKey(unittest.TestCase):
     def test_schnorr(self):
         """Test the Python Schnorr implementation."""
