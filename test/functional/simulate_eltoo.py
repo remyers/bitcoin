@@ -1360,7 +1360,7 @@ class L2Node:
 
 class SimulateL2Tests(BitcoinTestFramework):
 
-    def next_block(self, number, spend=None, additional_coinbase_value=0, script=CScript([OP_TRUE]), solve=True, *, version=1):
+    def next_block(self, number, spend=None, additional_coinbase_value=0, script=CScript([OP_TRUE]), solve=True, *, version=4):
         if self.tip is None:
             base_block_hash = self.genesis_hash
             block_time = int(self.start_time) + 1
