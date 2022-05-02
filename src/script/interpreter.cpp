@@ -1583,9 +1583,13 @@ bool SignatureHashSchnorr(uint256& hash_out, const ScriptExecutionData& execdata
         ss << cache.m_spent_outputs[in_pos];
         ss << tx_to.vin[in_pos].nSequence;
     } else if (input_type == SIGHASH_ANYPREVOUT) {
+        ss << tx_to.size()
+        ss << in_pos;
         ss << cache.m_spent_outputs[in_pos];
         ss << tx_to.vin[in_pos].nSequence;
     } else if (input_type == SIGHASH_ANYPREVOUTANYSCRIPT) {
+        ss << tx_to.size()
+        ss << in_pos;
         ss << tx_to.vin[in_pos].nSequence;
     } else {
         ss << in_pos;
