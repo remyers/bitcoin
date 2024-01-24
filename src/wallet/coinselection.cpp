@@ -715,6 +715,17 @@ CAmount GenerateChangeTarget(const CAmount payment_value, const CAmount change_f
     }
 }
 
+CAmount GenerateChangeTargetFromUtxoTargets(const std::vector<UtxoTarget>& utxo_targets, const CAmount change_fee, FastRandomContext& rng)
+{
+    // sort most depleted utxo targets first
+    std::min_element(utxo_targets.begin(), utxo_targets.end(), [](const UtxoTarget &a, const UtxoTarget &b)
+    { 
+        return (double(a.current_utxo_count) / a.target_utxo_count) < (double(b.current_utxo_count) / b.target_utxo_count);
+    });
+    // return random value in target range of the most depleted utxo 
+    return change_fee + rng.randrange(utxo_targets.front().end_satoshis - utxo_targets.front().start_satoshis) + utxo_targets.front().start_satoshis;
+}
+
 void SelectionResult::SetBumpFeeDiscount(const CAmount discount)
 {
     // Overlapping ancestry can only lower the fees, not increase them

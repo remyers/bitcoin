@@ -71,6 +71,8 @@ static void addCoin(CoinsResult& coins,
             /*discard_feerate=*/ CFeeRate(0),
             /*tx_noinputs_size=*/ 0,
             /*avoid_partial=*/ avoid_partial_spends,
+            /*include_unsafe_inputs=*/ false,
+            /*utxo_targets=*/ std::vector<UtxoTarget>(),
     };
 }
 

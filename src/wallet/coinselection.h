@@ -134,6 +134,13 @@ public:
     bool HasEffectiveValue() const { return effective_value.has_value(); }
 };
 
+struct UtxoTarget {
+    CAmount start_satoshis;
+    CAmount end_satoshis;
+    uint32_t target_utxo_count;
+    uint32_t current_utxo_count = 0;
+};
+
 /** Parameters for one iteration of Coin Selection. */
 struct CoinSelectionParams {
     /** Randomness to use in the context of coin selection. */
@@ -174,10 +181,15 @@ struct CoinSelectionParams {
      * 1) Received from other wallets, 2) replacing other txs, 3) that have been replaced.
      */
     bool m_include_unsafe_inputs = false;
+    /**
+     * UTXO amount ranges to target if change is created
+    */
+    std::vector<UtxoTarget> m_utxo_targets;
 
     CoinSelectionParams(FastRandomContext& rng_fast, size_t change_output_size, size_t change_spend_size,
                         CAmount min_change_target, CFeeRate effective_feerate,
-                        CFeeRate long_term_feerate, CFeeRate discard_feerate, size_t tx_noinputs_size, bool avoid_partial)
+                        CFeeRate long_term_feerate, CFeeRate discard_feerate, size_t tx_noinputs_size, bool avoid_partial,
+                        bool include_unsafe_inputs, std::vector<UtxoTarget> utxo_targets)
         : rng_fast{rng_fast},
           change_output_size(change_output_size),
           change_spend_size(change_spend_size),
@@ -186,7 +198,9 @@ struct CoinSelectionParams {
           m_long_term_feerate(long_term_feerate),
           m_discard_feerate(discard_feerate),
           tx_noinputs_size(tx_noinputs_size),
-          m_avoid_partial_spends(avoid_partial)
+          m_avoid_partial_spends(avoid_partial),
+          m_include_unsafe_inputs(include_unsafe_inputs),
+          m_utxo_targets(utxo_targets)
     {
     }
     CoinSelectionParams(FastRandomContext& rng_fast)
@@ -305,6 +319,15 @@ typedef std::map<CoinEligibilityFilter, OutputGroupTypeMap> FilteredOutputGroups
  * @param[in]   change_fee      Fee for creating a change output.
  */
 [[nodiscard]] CAmount GenerateChangeTarget(const CAmount payment_value, const CAmount change_fee, FastRandomContext& rng);
+
+/** Choose a random change target within the Utxo bucket that is most depleted.
+ * Wallets using this change selection mechanism have reduced privacy in exchange for
+ * UTXO management that better meets operational needs.
+ *
+ * @param[in]   utxo_targets    UTXO set target buckets.
+ * @param[in]   change_fee      Fee for creating a change output.
+ */
+[[nodiscard]] CAmount GenerateChangeTargetFromUtxoTargets(const std::vector<UtxoTarget>& utxo_targets, const CAmount change_fee, FastRandomContext& rng);
 
 enum class SelectionAlgorithm : uint8_t
 {

@@ -76,6 +76,8 @@ static void CoinSelection(benchmark::Bench& bench)
         /*discard_feerate=*/ CFeeRate(0),
         /*tx_noinputs_size=*/ 0,
         /*avoid_partial=*/ false,
+        /*include_unsafe_inputs=*/ false,
+        /*utxo_targets=*/ std::vector<wallet::UtxoTarget>(),
     };
     auto group = wallet::GroupOutputs(wallet, available_coins, coin_selection_params, {{filter_standard}})[filter_standard];
     bench.run([&] {
