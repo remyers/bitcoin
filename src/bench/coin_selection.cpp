@@ -68,14 +68,15 @@ static void CoinSelection(benchmark::Bench& bench)
     FastRandomContext rand{};
     const CoinSelectionParams coin_selection_params{
         rand,
-        /*change_output_size=*/ 34,
-        /*change_spend_size=*/ 148,
-        /*min_change_target=*/ CHANGE_LOWER,
-        /*effective_feerate=*/ CFeeRate(0),
-        /*long_term_feerate=*/ CFeeRate(0),
-        /*discard_feerate=*/ CFeeRate(0),
-        /*tx_noinputs_size=*/ 0,
-        /*avoid_partial=*/ false,
+        /*change_output_size=*/34,
+        /*change_spend_size=*/148,
+        /*min_change_target=*/CHANGE_LOWER,
+        /*effective_feerate=*/CFeeRate(0),
+        /*long_term_feerate=*/CFeeRate(0),
+        /*discard_feerate=*/CFeeRate(0),
+        /*tx_noinputs_size=*/0,
+        /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<wallet::UtxoTarget>(),
     };
     auto group = wallet::GroupOutputs(wallet, available_coins, coin_selection_params, {{filter_standard}})[filter_standard];
     bench.run([&] {

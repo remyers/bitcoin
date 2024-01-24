@@ -62,15 +62,16 @@ static void addCoin(CoinsResult& coins,
  CoinSelectionParams makeSelectionParams(FastRandomContext& rand, bool avoid_partial_spends)
 {
     return CoinSelectionParams{
-            rand,
-            /*change_output_size=*/ 0,
-            /*change_spend_size=*/ 0,
-            /*min_change_target=*/ CENT,
-            /*effective_feerate=*/ CFeeRate(0),
-            /*long_term_feerate=*/ CFeeRate(0),
-            /*discard_feerate=*/ CFeeRate(0),
-            /*tx_noinputs_size=*/ 0,
-            /*avoid_partial=*/ avoid_partial_spends,
+        rand,
+        /*change_output_size=*/0,
+        /*change_spend_size=*/0,
+        /*min_change_target=*/CENT,
+        /*effective_feerate=*/CFeeRate(0),
+        /*long_term_feerate=*/CFeeRate(0),
+        /*discard_feerate=*/CFeeRate(0),
+        /*tx_noinputs_size=*/0,
+        /*avoid_partial=*/avoid_partial_spends,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
 }
 

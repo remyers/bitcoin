@@ -163,14 +163,15 @@ inline std::vector<OutputGroup>& KnapsackGroupOutputs(const CoinsResult& availab
     FastRandomContext rand{};
     CoinSelectionParams coin_selection_params{
         rand,
-        /*change_output_size=*/ 0,
-        /*change_spend_size=*/ 0,
-        /*min_change_target=*/ CENT,
-        /*effective_feerate=*/ CFeeRate(0),
-        /*long_term_feerate=*/ CFeeRate(0),
-        /*discard_feerate=*/ CFeeRate(0),
-        /*tx_noinputs_size=*/ 0,
-        /*avoid_partial=*/ false,
+        /*change_output_size=*/0,
+        /*change_spend_size=*/0,
+        /*min_change_target=*/CENT,
+        /*effective_feerate=*/CFeeRate(0),
+        /*long_term_feerate=*/CFeeRate(0),
+        /*discard_feerate=*/CFeeRate(0),
+        /*tx_noinputs_size=*/0,
+        /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
     static OutputGroupTypeMap static_groups;
     static_groups = GroupOutputs(wallet, available_coins, coin_selection_params, {{filter}})[filter];
@@ -308,14 +309,15 @@ BOOST_AUTO_TEST_CASE(bnb_search_test)
     // Make sure that effective value is working in AttemptSelection when BnB is used
     CoinSelectionParams coin_selection_params_bnb{
         rand,
-        /*change_output_size=*/ 31,
-        /*change_spend_size=*/ 68,
-        /*min_change_target=*/ 0,
-        /*effective_feerate=*/ CFeeRate(3000),
-        /*long_term_feerate=*/ CFeeRate(1000),
-        /*discard_feerate=*/ CFeeRate(1000),
-        /*tx_noinputs_size=*/ 0,
-        /*avoid_partial=*/ false,
+        /*change_output_size=*/31,
+        /*change_spend_size=*/68,
+        /*min_change_target=*/0,
+        /*effective_feerate=*/CFeeRate(3000),
+        /*long_term_feerate=*/CFeeRate(1000),
+        /*discard_feerate=*/CFeeRate(1000),
+        /*tx_noinputs_size=*/0,
+        /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
     coin_selection_params_bnb.m_change_fee = coin_selection_params_bnb.m_effective_feerate.GetFee(coin_selection_params_bnb.change_output_size);
     coin_selection_params_bnb.m_cost_of_change = coin_selection_params_bnb.m_effective_feerate.GetFee(coin_selection_params_bnb.change_spend_size) + coin_selection_params_bnb.m_change_fee;
@@ -464,15 +466,16 @@ BOOST_AUTO_TEST_CASE(bnb_sffo_restriction)
 
     FastRandomContext rand{};
     CoinSelectionParams params{
-            rand,
-            /*change_output_size=*/ 31,  // unused value, p2wpkh output size (wallet default change type)
-            /*change_spend_size=*/ 68,   // unused value, p2wpkh input size (high-r signature)
-            /*min_change_target=*/ 0,    // dummy, set later
-            /*effective_feerate=*/ CFeeRate(3000),
-            /*long_term_feerate=*/ CFeeRate(1000),
-            /*discard_feerate=*/ CFeeRate(1000),
-            /*tx_noinputs_size=*/ 0,
-            /*avoid_partial=*/ false,
+        rand,
+        /*change_output_size=*/31, // unused value, p2wpkh output size (wallet default change type)
+        /*change_spend_size=*/68,  // unused value, p2wpkh input size (high-r signature)
+        /*min_change_target=*/0,   // dummy, set later
+        /*effective_feerate=*/CFeeRate(3000),
+        /*long_term_feerate=*/CFeeRate(1000),
+        /*discard_feerate=*/CFeeRate(1000),
+        /*tx_noinputs_size=*/0,
+        /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
     params.m_subtract_fee_outputs = true;
     params.m_change_fee = params.m_effective_feerate.GetFee(params.change_output_size);
@@ -853,14 +856,15 @@ BOOST_AUTO_TEST_CASE(SelectCoins_test)
         // Perform selection
         CoinSelectionParams cs_params{
             rand,
-            /*change_output_size=*/ 34,
-            /*change_spend_size=*/ 148,
-            /*min_change_target=*/ CENT,
-            /*effective_feerate=*/ CFeeRate(0),
-            /*long_term_feerate=*/ CFeeRate(0),
-            /*discard_feerate=*/ CFeeRate(0),
-            /*tx_noinputs_size=*/ 0,
-            /*avoid_partial=*/ false,
+            /*change_output_size=*/34,
+            /*change_spend_size=*/148,
+            /*min_change_target=*/CENT,
+            /*effective_feerate=*/CFeeRate(0),
+            /*long_term_feerate=*/CFeeRate(0),
+            /*discard_feerate=*/CFeeRate(0),
+            /*tx_noinputs_size=*/0,
+            /*avoid_partial=*/false,
+            /*utxo_targets=*/std::vector<UtxoTarget>(),
         };
         cs_params.m_cost_of_change = 1;
         cs_params.min_viable_change = 1;
@@ -1115,15 +1119,16 @@ BOOST_AUTO_TEST_CASE(coin_grinder_tests)
 
     FastRandomContext rand;
     CoinSelectionParams dummy_params{ // Only used to provide the 'avoid_partial' flag.
-            rand,
-            /*change_output_size=*/34,
-            /*change_spend_size=*/68,
-            /*min_change_target=*/CENT,
-            /*effective_feerate=*/CFeeRate(5000),
-            /*long_term_feerate=*/CFeeRate(2000),
-            /*discard_feerate=*/CFeeRate(1000),
-            /*tx_noinputs_size=*/10 + 34, // static header size + output size
-            /*avoid_partial=*/false,
+        rand,
+        /*change_output_size=*/34,
+        /*change_spend_size=*/68,
+        /*min_change_target=*/CENT,
+        /*effective_feerate=*/CFeeRate(5000),
+        /*long_term_feerate=*/CFeeRate(2000),
+        /*discard_feerate=*/CFeeRate(1000),
+        /*tx_noinputs_size=*/10 + 34, // static header size + output size
+        /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
 
     {
@@ -1322,15 +1327,16 @@ BOOST_AUTO_TEST_CASE(srd_tests)
 
     FastRandomContext rand;
     CoinSelectionParams dummy_params{ // Only used to provide the 'avoid_partial' flag.
-            rand,
-            /*change_output_size=*/34,
-            /*change_spend_size=*/68,
-            /*min_change_target=*/CENT,
-            /*effective_feerate=*/CFeeRate(0),
-            /*long_term_feerate=*/CFeeRate(0),
-            /*discard_feerate=*/CFeeRate(0),
-            /*tx_noinputs_size=*/10 + 34, // static header size + output size
-            /*avoid_partial=*/false,
+        rand,
+        /*change_output_size=*/34,
+        /*change_spend_size=*/68,
+        /*min_change_target=*/CENT,
+        /*effective_feerate=*/CFeeRate(0),
+        /*long_term_feerate=*/CFeeRate(0),
+        /*discard_feerate=*/CFeeRate(0),
+        /*tx_noinputs_size=*/10 + 34, // static header size + output size
+        /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
 
     {
@@ -1427,6 +1433,7 @@ BOOST_AUTO_TEST_CASE(check_max_weight)
         /*discard_feerate=*/CFeeRate(0),
         /*tx_noinputs_size=*/10 + 34, // static header size + output size
         /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
 
     {
@@ -1532,6 +1539,7 @@ BOOST_AUTO_TEST_CASE(SelectCoins_effective_value_test)
         /*discard_feerate=*/CFeeRate(1000),
         /*tx_noinputs_size=*/0,
         /*avoid_partial=*/false,
+        /*utxo_targets=*/std::vector<UtxoTarget>(),
     };
     CCoinControl cc;
     cc.m_allow_other_inputs = false;
