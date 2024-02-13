@@ -172,6 +172,7 @@ inline std::vector<OutputGroup>& KnapsackGroupOutputs(const CoinsResult& availab
         /*tx_noinputs_size=*/0,
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
     static OutputGroupTypeMap static_groups;
     static_groups = GroupOutputs(wallet, available_coins, coin_selection_params, {{filter}})[filter];
@@ -318,6 +319,7 @@ BOOST_AUTO_TEST_CASE(bnb_search_test)
         /*tx_noinputs_size=*/0,
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
     coin_selection_params_bnb.m_change_fee = coin_selection_params_bnb.m_effective_feerate.GetFee(coin_selection_params_bnb.change_output_size);
     coin_selection_params_bnb.m_cost_of_change = coin_selection_params_bnb.m_effective_feerate.GetFee(coin_selection_params_bnb.change_spend_size) + coin_selection_params_bnb.m_change_fee;
@@ -476,6 +478,7 @@ BOOST_AUTO_TEST_CASE(bnb_sffo_restriction)
         /*tx_noinputs_size=*/0,
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
     params.m_subtract_fee_outputs = true;
     params.m_change_fee = params.m_effective_feerate.GetFee(params.change_output_size);
@@ -865,6 +868,7 @@ BOOST_AUTO_TEST_CASE(SelectCoins_test)
             /*tx_noinputs_size=*/0,
             /*avoid_partial=*/false,
             /*utxo_targets=*/std::vector<UtxoTarget>(),
+            /*bucket_refill_feerate=*/CFeeRate(0),
         };
         cs_params.m_cost_of_change = 1;
         cs_params.min_viable_change = 1;
@@ -1129,6 +1133,7 @@ BOOST_AUTO_TEST_CASE(coin_grinder_tests)
         /*tx_noinputs_size=*/10 + 34, // static header size + output size
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
 
     {
@@ -1337,6 +1342,7 @@ BOOST_AUTO_TEST_CASE(srd_tests)
         /*tx_noinputs_size=*/10 + 34, // static header size + output size
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
 
     {
@@ -1434,6 +1440,7 @@ BOOST_AUTO_TEST_CASE(check_max_weight)
         /*tx_noinputs_size=*/10 + 34, // static header size + output size
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0)
     };
 
     {
@@ -1540,6 +1547,7 @@ BOOST_AUTO_TEST_CASE(SelectCoins_effective_value_test)
         /*tx_noinputs_size=*/0,
         /*avoid_partial=*/false,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
     CCoinControl cc;
     cc.m_allow_other_inputs = false;

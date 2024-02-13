@@ -185,11 +185,17 @@ struct CoinSelectionParams {
      * UTXO amount ranges to target if change is created
      */
     std::vector<UtxoTarget> m_utxo_targets;
+    /**
+     * Proactively split a UTXOs into target buckets when:
+     *  1) a bucket is less than 30% full OR
+     *  2) the bucket refill fee rate is greater than the current fee rate and a bucket is less than 70% full
+     */
+    CFeeRate m_bucket_refill_feerate;
 
     CoinSelectionParams(FastRandomContext& rng_fast, size_t change_output_size, size_t change_spend_size,
                         CAmount min_change_target, CFeeRate effective_feerate,
                         CFeeRate long_term_feerate, CFeeRate discard_feerate, size_t tx_noinputs_size, bool avoid_partial,
-                        std::vector<UtxoTarget> utxo_targets)
+                        std::vector<UtxoTarget> utxo_targets, CFeeRate bucket_refill_feerate)
         : rng_fast{rng_fast},
           change_output_size(change_output_size),
           change_spend_size(change_spend_size),
@@ -199,7 +205,8 @@ struct CoinSelectionParams {
           m_discard_feerate(discard_feerate),
           tx_noinputs_size(tx_noinputs_size),
           m_avoid_partial_spends(avoid_partial),
-          m_utxo_targets(utxo_targets)
+          m_utxo_targets(utxo_targets),
+          m_bucket_refill_feerate(bucket_refill_feerate)
     {
     }
     CoinSelectionParams(FastRandomContext& rng_fast)

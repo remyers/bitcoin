@@ -72,6 +72,7 @@ static void addCoin(CoinsResult& coins,
         /*tx_noinputs_size=*/0,
         /*avoid_partial=*/avoid_partial_spends,
         /*utxo_targets=*/std::vector<UtxoTarget>(),
+        /*bucket_refill_feerate=*/CFeeRate(0),
     };
 }
 

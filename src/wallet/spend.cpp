@@ -201,6 +201,20 @@ std::vector<COutput> CoinsResult::All() const
     return all;
 }
 
+std::optional<COutput> CoinsResult::Max() const
+{
+    std::optional<COutput> max_out;
+    for (const auto& it : coins) {
+        const auto out_it = std::max_element(it.second.begin(), it.second.end(), [max_out](const COutput& a, const COutput& b) {
+            return a.txout.nValue < b.txout.nValue;
+        });
+        if (out_it != it.second.end() && (!max_out || out_it->txout.nValue > max_out->txout.nValue)) {
+            max_out = *out_it;
+        }
+    }
+    return max_out;
+}
+
 void CoinsResult::Clear() {
     coins.clear();
 }
@@ -1220,6 +1234,7 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
         common::ReadSettings(utxo_targets_file_path, utxo_targets_json, read_errors);
 
         coin_selection_params.m_utxo_targets = UtxoTargetsFromJson(utxo_targets_json["buckets"], available_coins);
+        coin_selection_params.m_bucket_refill_feerate = CFeeRate(utxo_targets_json["bucket_refill_feerate"].getInt<CAmount>());
     }
 
     if (coin_selection_params.m_utxo_targets.size() > 0) {
@@ -1228,6 +1243,15 @@ static util::Result<CreatedTransactionResult> CreateTransactionInternal(
         auto change_target = GenerateChangeTargetFromUtxoTargets(coin_selection_params.m_utxo_targets, coin_selection_params.m_change_fee, capacity, rng_fast);
         if (change_target) {
             coin_selection_params.m_min_change_target = change_target.value();
+            // Proactively refill target buckets when a utxo target bucket is very low, or fees are low.
+            bool refill = coin_selection_params.m_effective_feerate < coin_selection_params.m_bucket_refill_feerate;
+            if (capacity < 0.3 || (refill && capacity < 0.7)) {
+                // Adding our largest available UTXO creates extra change that can be split into target buckets.
+                auto largest_utxo = available_coins.Max();
+                if (largest_utxo) {
+                    preset_inputs.Insert(largest_utxo.value(), coin_selection_params.m_subtract_fee_outputs);
+                }
+            }
         }
     }
 
