@@ -11,8 +11,10 @@
 #include <primitives/transaction.h>
 #include <script/keyorigin.h>
 #include <script/signingprovider.h>
+#include <wallet/coinselection.h>
 
 #include <algorithm>
+#include <bitset>
 #include <map>
 #include <optional>
 #include <set>
@@ -115,6 +117,8 @@ public:
     std::optional<uint32_t> m_locktime;
     //! Version
     std::optional<uint32_t> m_version;
+    //! Enable corresponding coin selection algorithms
+    std::bitset<size_t(SelectionAlgorithm::NUM_ELEMENTS)> m_enable_algos{std::numeric_limits<size_t>::max()};
 
     CCoinControl();
 
